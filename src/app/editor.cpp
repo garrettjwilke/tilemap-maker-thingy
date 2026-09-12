@@ -647,7 +647,7 @@ struct ScopedStyleColor {
     ScopedStyleColor& operator=(const ScopedStyleColor&) = delete;
 };
 
-static void draw_top_toolbar_row() {
+static void draw_top_nav_and_view_row() {
     // Mode switcher buttons
     {
         ScopedStyleColor col(ImGuiCol_Button, ImVec4(0.24f, 0.48f, 0.80f, 1.0f), g_ed.view_mode == EditorViewMode::Tilemap);
@@ -666,8 +666,58 @@ static void draw_top_toolbar_row() {
     ImGui::TextDisabled("|");
     ImGui::SameLine();
 
+    if (g_ed.view_mode == EditorViewMode::Tilemap) {
+        // Global View Controls (Grid & Collision checkboxes)
+        if (ImGui::Checkbox("Grid", &g_ed.settings.grid_lines)) {
+            persist_settings();
+        }
+        ImGui::SameLine();
+        if (ImGui::Checkbox("Collision", &g_ed.settings.collision_overlay)) {
+            persist_settings();
+        }
+        ImGui::SameLine();
+        ImGui::TextDisabled("|");
+        ImGui::SameLine();
+
+        // Zoom Controls
+        if (ImGui::Button("-##ZoomOut")) {
+            g_ed.zoom = std::max(0.25f, g_ed.zoom / 1.25f);
+        }
+        ImGui::SameLine();
+        ImGui::Text("%.0f%%", g_ed.zoom * 100.0f);
+        ImGui::SameLine();
+        if (ImGui::Button("+##ZoomIn")) {
+            g_ed.zoom = std::min(16.0f, g_ed.zoom * 1.25f);
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Fit View")) {
+            g_ed.zoom = 2.0f;
+            g_ed.pan = ImVec2(60, 40);
+        }
+    } else {
+        // Collision Mode View Controls
+        if (ImGui::Button("-##ColZoomOut")) {
+            g_ed.col_view_zoom = std::max(0.5f, g_ed.col_view_zoom / 1.25f);
+        }
+        ImGui::SameLine();
+        ImGui::Text("%.0f%%", g_ed.col_view_zoom * 100.0f);
+        ImGui::SameLine();
+        if (ImGui::Button("+##ColZoomIn")) {
+            g_ed.col_view_zoom = std::min(16.0f, g_ed.col_view_zoom * 1.25f);
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Fit View##ColFit")) {
+            g_ed.col_view_zoom = 3.0f;
+            g_ed.col_view_pan = ImVec2(40, 40);
+        }
+    }
+}
+
+static void draw_tool_selection_row() {
     if (g_ed.view_mode == EditorViewMode::TilesetCollision) {
-        // Draw Collision Type Picker toolbar
+        ImGui::TextColored(ImVec4(0.4f, 0.75f, 1.0f, 1.0f), "COLLISION TYPES:");
+        ImGui::SameLine();
+
         {
             ScopedStyleColor col(ImGuiCol_Button, ImVec4(0.45f, 0.48f, 0.52f, 1.0f), g_ed.active_collision_type == 0);
             if (ImGui::Button("None (Clear)")) {
@@ -701,24 +751,6 @@ static void draw_top_toolbar_row() {
             ImGui::SameLine();
         }
 
-        if (g_ed.active_collision_type > 0) {
-            const CollisionType* ct = g_ed.doc.get_collision_type(g_ed.active_collision_type);
-            if (ct) {
-                float c_flt[3] = {ct->color.r / 255.0f, ct->color.g / 255.0f, ct->color.b / 255.0f};
-                ImGui::SetNextItemWidth(36);
-                if (ImGui::ColorEdit3("##ActiveColColor", c_flt, ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoLabel)) {
-                    g_ed.doc.set_collision_type_color(g_ed.active_collision_type,
-                        Rgb{static_cast<uint8_t>(c_flt[0] * 255.0f),
-                            static_cast<uint8_t>(c_flt[1] * 255.0f),
-                            static_cast<uint8_t>(c_flt[2] * 255.0f)});
-                }
-                if (ImGui::IsItemHovered()) {
-                    ImGui::SetTooltip("Change color for %s", ct->name.c_str());
-                }
-                ImGui::SameLine();
-            }
-        }
-
         const bool can_add = (g_ed.doc.collision_types.size() < 13);
         if (!can_add) ImGui::BeginDisabled(true);
         if (ImGui::Button("+ Add Type")) {
@@ -741,148 +773,334 @@ static void draw_top_toolbar_row() {
             g_ed.status_msg = "Removed collision type " + std::to_string(to_remove);
         }
         if (!can_remove) ImGui::EndDisabled();
-
-        ImGui::SameLine();
-        ImGui::TextDisabled("|");
-        ImGui::SameLine();
-
-        if (ImGui::Button("Set All Type 1")) {
-            g_ed.doc.tileset.init_tile_collisions(1);
-            g_ed.doc.mark_dirty();
-            g_ed.status_msg = "Set all tiles to Type 1.";
-        }
-        ImGui::SameLine();
-        if (ImGui::Button("Clear All")) {
-            g_ed.doc.tileset.init_tile_collisions(0);
-            g_ed.doc.mark_dirty();
-            g_ed.status_msg = "Cleared collision on all tiles.";
-        }
-
-        ImGui::SameLine();
-        ImGui::TextDisabled("|");
-        ImGui::SameLine();
-
-        if (ImGui::Button("-##ColZoomOut")) {
-            g_ed.col_view_zoom = std::max(0.5f, g_ed.col_view_zoom / 1.25f);
-        }
-        ImGui::SameLine();
-        ImGui::Text("%.0f%%", g_ed.col_view_zoom * 100.0f);
-        ImGui::SameLine();
-        if (ImGui::Button("+##ColZoomIn")) {
-            g_ed.col_view_zoom = std::min(16.0f, g_ed.col_view_zoom * 1.25f);
-        }
-        ImGui::SameLine();
-        if (ImGui::Button("Fit View##ColFit")) {
-            g_ed.col_view_zoom = 3.0f;
-            g_ed.col_view_pan = ImVec2(40, 40);
-        }
         return;
     }
 
-    auto tool_button = [](const char* label, Tool t, const char* shortcut) {
-        ScopedStyleColor col(ImGuiCol_Button, ImVec4(0.24f, 0.48f, 0.80f, 1.0f), g_ed.tool == t);
+    ImGui::TextColored(ImVec4(0.4f, 0.75f, 1.0f, 1.0f), "TOOLS:");
+    ImGui::SameLine();
+
+    auto tool_button = [](const char* label, Tool t, const char* shortcut, const char* tooltip) {
+        const bool is_active = (g_ed.tool == t);
+        const ImVec4 active_col(0.20f, 0.50f, 0.88f, 1.0f);
+        const ImVec4 hover_col(0.28f, 0.58f, 0.95f, 1.0f);
+        if (is_active) {
+            ImGui::PushStyleColor(ImGuiCol_Button, active_col);
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, hover_col);
+            ImGui::PushStyleColor(ImGuiCol_ButtonActive, active_col);
+            ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 1.5f);
+            ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(1.0f, 1.0f, 1.0f, 0.9f));
+        }
         char title[64];
         std::snprintf(title, sizeof(title), "%s (%s)", label, shortcut);
         if (ImGui::Button(title)) {
             g_ed.tool = t;
             g_ed.paste_mode = false;
         }
+        if (is_active) {
+            ImGui::PopStyleColor(4);
+            ImGui::PopStyleVar();
+        }
+        if (ImGui::IsItemHovered() && tooltip && *tooltip) {
+            ImGui::SetTooltip("%s", tooltip);
+        }
         ImGui::SameLine();
     };
 
-    tool_button("Paint", Tool::Paint, "1");
-    tool_button("Line", Tool::Line, "2");
-    tool_button("Erase", Tool::Erase, "3");
-    tool_button("Rect", Tool::Rect, "4");
-    tool_button("Fill", Tool::Fill, "5");
-    tool_button("Select", Tool::Select, "6");
-    tool_button("Pick", Tool::Eyedropper, "7");
+    tool_button("Pencil", Tool::Paint, "1", "Freehand drawing tool");
+    tool_button("Line", Tool::Line, "2", "Straight line drawing tool");
+    tool_button("Eraser", Tool::Erase, "3", "Eraser tool");
+    tool_button("Rectangle", Tool::Rect, "4", "Rectangle / Box tool");
+    tool_button("Fill", Tool::Fill, "5", "Flood fill contiguous tiles");
+    tool_button("Select", Tool::Select, "6", "Rectangular selection & move tool");
+    tool_button("Eyedropper", Tool::Eyedropper, "7", "Pick tile from map into stamp");
+}
 
-    if (g_ed.tool == Tool::Rect) {
+static void draw_tool_options_row() {
+    if (g_ed.view_mode == EditorViewMode::TilesetCollision) {
+        ImGui::TextColored(ImVec4(0.4f, 0.75f, 1.0f, 1.0f), "COLLISION OPTIONS:");
+        ImGui::SameLine();
+
+        if (g_ed.active_collision_type > 0) {
+            const CollisionType* ct = g_ed.doc.get_collision_type(g_ed.active_collision_type);
+            if (ct) {
+                ImGui::Text("Active: %s (Type %d)", ct->name.c_str(), ct->id);
+                ImGui::SameLine();
+                float c_flt[3] = {ct->color.r / 255.0f, ct->color.g / 255.0f, ct->color.b / 255.0f};
+                ImGui::SetNextItemWidth(36);
+                if (ImGui::ColorEdit3("##ActiveColColor", c_flt, ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoLabel)) {
+                    g_ed.doc.set_collision_type_color(g_ed.active_collision_type,
+                        Rgb{static_cast<uint8_t>(c_flt[0] * 255.0f),
+                            static_cast<uint8_t>(c_flt[1] * 255.0f),
+                            static_cast<uint8_t>(c_flt[2] * 255.0f)});
+                }
+                if (ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip("Change color for %s", ct->name.c_str());
+                }
+                ImGui::SameLine();
+            }
+        } else {
+            ImGui::TextDisabled("Active: None (Erase collision)");
+            ImGui::SameLine();
+        }
+
         ImGui::TextDisabled("|");
         ImGui::SameLine();
+
+        if (ImGui::Button("Set All Type 1##ColSetAll")) {
+            g_ed.doc.tileset.init_tile_collisions(1);
+            g_ed.doc.mark_dirty();
+            g_ed.status_msg = "Set all tiles to Type 1.";
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Clear All##ColClearAll")) {
+            g_ed.doc.tileset.init_tile_collisions(0);
+            g_ed.doc.mark_dirty();
+            g_ed.status_msg = "Cleared collision on all tiles.";
+        }
+        ImGui::SameLine();
+        ImGui::TextDisabled("|  Left-click: Assign Collision  |  Right-click: Clear (None)  |  Middle-drag/Space: Pan  |  Scroll: Zoom");
+        return;
+    }
+
+    // Helper for rendering brush thickness slider and quick preset buttons
+    auto draw_thickness_controls = [](const char* label_prefix, const char* id_suffix) {
+        ImGui::Text("Thickness:");
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(90);
+        char slider_id[64];
+        std::snprintf(slider_id, sizeof(slider_id), "##%sThickness%s", label_prefix, id_suffix);
+        if (ImGui::SliderInt(slider_id, &g_ed.brush_size, 1, 4, "%d tiles")) {
+            persist_settings();
+        }
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("Brush thickness: 1-4 tiles");
+        }
+        ImGui::SameLine();
+        for (int s = 1; s <= 4; ++s) {
+            ScopedStyleColor bcol(ImGuiCol_Button, ImVec4(0.24f, 0.48f, 0.80f, 1.0f), g_ed.brush_size == s);
+            char btn_lbl[32];
+            std::snprintf(btn_lbl, sizeof(btn_lbl), "%d##%sSz%d%s", s, label_prefix, s, id_suffix);
+            if (ImGui::Button(btn_lbl, ImVec2(22, 0))) {
+                g_ed.brush_size = s;
+                persist_settings();
+            }
+            ImGui::SameLine();
+        }
+    };
+
+    // Helper for rendering tile source toggle (Terrain vs Stamp)
+    auto draw_source_controls = [](const char* id_suffix) {
+        ImGui::Text("Mode:");
+        ImGui::SameLine();
         {
-            ScopedStyleColor col(ImGuiCol_Button, ImVec4(0.24f, 0.48f, 0.80f, 1.0f), g_ed.rect_fill);
-            if (ImGui::Button("Rect: Fill")) {
-                g_ed.rect_fill = true;
+            ScopedStyleColor col(ImGuiCol_Button, ImVec4(0.18f, 0.55f, 0.35f, 1.0f), g_ed.paint_mode == TileMode::Terrain);
+            char t_btn[48];
+            std::snprintf(t_btn, sizeof(t_btn), "Terrain Autotile##%s", id_suffix);
+            if (ImGui::Button(t_btn)) {
+                g_ed.paint_mode = TileMode::Terrain;
+                persist_settings();
             }
         }
         ImGui::SameLine();
         {
-            ScopedStyleColor col(ImGuiCol_Button, ImVec4(0.24f, 0.48f, 0.80f, 1.0f), !g_ed.rect_fill);
-            if (ImGui::Button("Rect: Outline")) {
-                g_ed.rect_fill = false;
+            ScopedStyleColor col(ImGuiCol_Button, ImVec4(0.18f, 0.55f, 0.35f, 1.0f), g_ed.paint_mode == TileMode::Stamp);
+            char s_btn[48];
+            std::snprintf(s_btn, sizeof(s_btn), "Stamp Tile##%s", id_suffix);
+            if (ImGui::Button(s_btn)) {
+                g_ed.paint_mode = TileMode::Stamp;
+                persist_settings();
             }
         }
         ImGui::SameLine();
-    }
-
-    ImGui::TextDisabled("|");
-    ImGui::SameLine();
-
-    // Mode: Terrain vs Stamp
-    {
-        ScopedStyleColor col(ImGuiCol_Button, ImVec4(0.18f, 0.55f, 0.35f, 1.0f), g_ed.paint_mode == TileMode::Terrain);
-        if (ImGui::Button("Terrain Autotile")) {
-            g_ed.paint_mode = TileMode::Terrain;
-            persist_settings();
+        if (g_ed.paint_mode == TileMode::Terrain) {
+            char r_btn[48];
+            std::snprintf(r_btn, sizeof(r_btn), "Reroll Variants##%s", id_suffix);
+            if (ImGui::Button(r_btn)) {
+                g_ed.doc.reroll_variants();
+                g_ed.status_msg = "Rerolled terrain variants.";
+            }
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("Rerolls variant chances across all terrain autotiles on the map");
+            }
+            ImGui::SameLine();
+        } else {
+            ImGui::TextDisabled("Stamp: (%d, %d)", g_ed.stamp_col, g_ed.stamp_row);
+            ImGui::SameLine();
         }
-    }
-    ImGui::SameLine();
+    };
 
-    {
-        ScopedStyleColor col(ImGuiCol_Button, ImVec4(0.18f, 0.55f, 0.35f, 1.0f), g_ed.paint_mode == TileMode::Stamp);
-        if (ImGui::Button("Stamp Tile")) {
-            g_ed.paint_mode = TileMode::Stamp;
-            persist_settings();
+    // Helper for rendering contextual hints only when there is sufficient room
+    auto draw_hint = [](const char* hint) {
+        if (ImGui::GetContentRegionAvail().x > 160.0f) {
+            ImGui::TextDisabled("|  %s", hint);
         }
-    }
+    };
 
-    ImGui::SameLine();
-    ImGui::TextDisabled("|");
-    ImGui::SameLine();
+    switch (g_ed.tool) {
+        case Tool::Paint: {
+            ImGui::TextColored(ImVec4(0.4f, 0.75f, 1.0f, 1.0f), "PENCIL OPTIONS:");
+            ImGui::SameLine();
+            draw_thickness_controls("Pencil", "Opt");
+            ImGui::TextDisabled("|");
+            ImGui::SameLine();
+            draw_source_controls("PencilOpt");
+            draw_hint("Left-drag: Paint  |  Right-drag: Erase");
+            break;
+        }
+        case Tool::Line: {
+            ImGui::TextColored(ImVec4(0.4f, 0.75f, 1.0f, 1.0f), "LINE OPTIONS:");
+            ImGui::SameLine();
+            draw_thickness_controls("Line", "Opt");
+            ImGui::TextDisabled("|");
+            ImGui::SameLine();
+            draw_source_controls("LineOpt");
+            draw_hint("Left-drag: Draw Line  |  Right-drag: Erase Line");
+            break;
+        }
+        case Tool::Erase: {
+            ImGui::TextColored(ImVec4(0.4f, 0.75f, 1.0f, 1.0f), "ERASER OPTIONS:");
+            ImGui::SameLine();
+            draw_thickness_controls("Eraser", "Opt");
+            ImGui::TextDisabled("|");
+            ImGui::SameLine();
+            if (ImGui::Button("Clear Entire Map##EraseAll")) {
+                g_ed.doc.begin_stroke("Clear Map");
+                g_ed.doc.erase_rect({0, 0, g_ed.doc.width, g_ed.doc.height});
+                g_ed.doc.end_stroke();
+                g_ed.status_msg = "Cleared map.";
+            }
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("Erase all tiles on the entire map");
+            }
+            ImGui::SameLine();
+            draw_hint("Click & drag to erase tiles");
+            break;
+        }
+        case Tool::Rect: {
+            ImGui::TextColored(ImVec4(0.4f, 0.75f, 1.0f, 1.0f), "RECTANGLE OPTIONS:");
+            ImGui::SameLine();
+            {
+                ScopedStyleColor col(ImGuiCol_Button, ImVec4(0.24f, 0.48f, 0.80f, 1.0f), g_ed.rect_fill);
+                if (ImGui::Button("Fill##RectOptFill")) {
+                    g_ed.rect_fill = true;
+                }
+            }
+            ImGui::SameLine();
+            {
+                ScopedStyleColor col(ImGuiCol_Button, ImVec4(0.24f, 0.48f, 0.80f, 1.0f), !g_ed.rect_fill);
+                if (ImGui::Button("Outline##RectOptOutline")) {
+                    g_ed.rect_fill = false;
+                }
+            }
+            ImGui::SameLine();
+            if (!g_ed.rect_fill) {
+                draw_thickness_controls("Rect", "Opt");
+            }
+            ImGui::TextDisabled("|");
+            ImGui::SameLine();
+            draw_source_controls("RectOpt");
+            draw_hint("Left-drag: Draw Rect  |  Right-drag: Erase Rect");
+            break;
+        }
+        case Tool::Fill: {
+            ImGui::TextColored(ImVec4(0.4f, 0.75f, 1.0f, 1.0f), "FILL OPTIONS:");
+            ImGui::SameLine();
+            draw_source_controls("FillOpt");
+            draw_hint("Scope: Contiguous matching tiles  |  Left-click: Fill  |  Right-click: Erase contiguous");
+            break;
+        }
+        case Tool::Select: {
+            ImGui::TextColored(ImVec4(0.4f, 0.75f, 1.0f, 1.0f), "SELECTION OPTIONS:");
+            ImGui::SameLine();
+            if (g_ed.paste_mode) {
+                ImGui::Text("Pasting: %d×%d at (%d, %d)", g_ed.clipboard.w, g_ed.clipboard.h, g_ed.paste_pos.x, g_ed.paste_pos.y);
+            } else if (g_ed.has_selection) {
+                ImGui::Text("Selected: %d×%d at (%d, %d)", g_ed.selection.w, g_ed.selection.h, g_ed.selection.x, g_ed.selection.y);
+            } else {
+                ImGui::TextDisabled("No active selection");
+            }
+            ImGui::SameLine();
+            ImGui::TextDisabled("|");
+            ImGui::SameLine();
 
-    // Brush size
-    ImGui::SetNextItemWidth(90);
-    if (ImGui::SliderInt("Brush", &g_ed.brush_size, 1, 4)) {
-        persist_settings();
-    }
-    ImGui::SameLine();
+            const bool can_cut_copy = g_ed.has_selection && !g_ed.paste_mode;
+            if (!can_cut_copy) ImGui::BeginDisabled(true);
+            if (ImGui::Button("Cut##SelCut")) {
+                if (g_ed.selection_lifted) {
+                    g_ed.clipboard = g_ed.floating_clip;
+                    g_ed.floating_clip.clear();
+                    g_ed.doc.end_stroke();
+                    g_ed.selection_lifted = false;
+                    g_ed.has_selection = false;
+                    g_ed.doc.set_clip_rect(nullptr);
+                } else {
+                    g_ed.doc.cut_rect(g_ed.selection, g_ed.clipboard);
+                    g_ed.has_selection = false;
+                    g_ed.doc.set_clip_rect(nullptr);
+                }
+                g_ed.status_msg = "Cut selection.";
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Copy##SelCopy")) {
+                if (g_ed.selection_lifted) {
+                    g_ed.clipboard = g_ed.floating_clip;
+                } else {
+                    g_ed.clipboard = g_ed.doc.copy_rect(g_ed.selection);
+                }
+                g_ed.status_msg = "Copied selection.";
+            }
+            if (!can_cut_copy) ImGui::EndDisabled();
+            ImGui::SameLine();
 
-    if (ImGui::Button("Reroll Variants")) {
-        g_ed.doc.reroll_variants();
-        g_ed.status_msg = "Rerolled terrain variants.";
-    }
-    if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("Rerolls variant chances across all terrain autotiles on the map");
-    }
+            const bool can_paste = !g_ed.clipboard.is_empty();
+            if (!can_paste) ImGui::BeginDisabled(true);
+            if (ImGui::Button("Paste##SelPaste")) {
+                start_paste();
+            }
+            if (!can_paste) ImGui::EndDisabled();
+            ImGui::SameLine();
 
-    ImGui::SameLine();
-    if (ImGui::Checkbox("Grid", &g_ed.settings.grid_lines)) {
-        persist_settings();
-    }
-    ImGui::SameLine();
-    if (ImGui::Checkbox("Collision", &g_ed.settings.collision_overlay)) {
-        persist_settings();
-    }
+            if (!can_cut_copy) ImGui::BeginDisabled(true);
+            if (ImGui::Button("Delete##SelDel")) {
+                if (g_ed.selection_lifted) {
+                    g_ed.doc.end_stroke();
+                    g_ed.selection_lifted = false;
+                    g_ed.floating_clip.clear();
+                    g_ed.has_selection = false;
+                    g_ed.doc.set_clip_rect(nullptr);
+                    g_ed.status_msg = "Deleted selected tiles.";
+                } else {
+                    g_ed.doc.erase_rect(g_ed.selection);
+                    g_ed.status_msg = "Cleared selection.";
+                }
+            }
+            if (!can_cut_copy) ImGui::EndDisabled();
+            ImGui::SameLine();
 
-    ImGui::SameLine();
-    ImGui::TextDisabled("|");
-    ImGui::SameLine();
+            const bool can_desel = g_ed.has_selection || g_ed.paste_mode;
+            if (!can_desel) ImGui::BeginDisabled(true);
+            if (ImGui::Button("Deselect##SelDeselect")) {
+                deselect();
+            }
+            if (!can_desel) ImGui::EndDisabled();
+            ImGui::SameLine();
 
-    if (ImGui::Button("-##ZoomOut")) {
-        g_ed.zoom = std::max(0.25f, g_ed.zoom / 1.25f);
-    }
-    ImGui::SameLine();
-    ImGui::Text("%.0f%%", g_ed.zoom * 100.0f);
-    ImGui::SameLine();
-    if (ImGui::Button("+##ZoomIn")) {
-        g_ed.zoom = std::min(16.0f, g_ed.zoom * 1.25f);
-    }
-    ImGui::SameLine();
-    if (ImGui::Button("Fit View")) {
-        g_ed.zoom = 2.0f;
-        g_ed.pan = ImVec2(60, 40);
+            draw_hint("Drag to select or move selection");
+            break;
+        }
+        case Tool::Eyedropper: {
+            ImGui::TextColored(ImVec4(0.4f, 0.75f, 1.0f, 1.0f), "EYEDROPPER OPTIONS:");
+            ImGui::SameLine();
+            ImGui::Text("Sampled Stamp Tile: (%d, %d)", g_ed.stamp_col, g_ed.stamp_row);
+            ImGui::SameLine();
+            if (ImGui::Button("Switch to Pencil##EyeToPencil")) {
+                g_ed.tool = Tool::Paint;
+                g_ed.status_msg = "Switched to Pencil tool.";
+            }
+            ImGui::SameLine();
+            draw_hint("Click any tile on the canvas to sample it into Stamp mode");
+            break;
+        }
     }
 }
 
@@ -2226,13 +2444,13 @@ int run_editor() {
             }
 
             if (g_ed.view_mode == EditorViewMode::Tilemap && !cmd) {
-                if (ImGui::IsKeyPressed(ImGuiKey_1) || ImGui::IsKeyPressed(ImGuiKey_P)) g_ed.tool = Tool::Paint;
-                if (ImGui::IsKeyPressed(ImGuiKey_2) || ImGui::IsKeyPressed(ImGuiKey_L)) g_ed.tool = Tool::Line;
-                if (ImGui::IsKeyPressed(ImGuiKey_3) || ImGui::IsKeyPressed(ImGuiKey_E)) g_ed.tool = Tool::Erase;
-                if (ImGui::IsKeyPressed(ImGuiKey_4) || ImGui::IsKeyPressed(ImGuiKey_R)) g_ed.tool = Tool::Rect;
-                if (ImGui::IsKeyPressed(ImGuiKey_5) || ImGui::IsKeyPressed(ImGuiKey_F)) g_ed.tool = Tool::Fill;
-                if (ImGui::IsKeyPressed(ImGuiKey_6) || ImGui::IsKeyPressed(ImGuiKey_S)) g_ed.tool = Tool::Select;
-                if (ImGui::IsKeyPressed(ImGuiKey_7) || ImGui::IsKeyPressed(ImGuiKey_I)) g_ed.tool = Tool::Eyedropper;
+                if (ImGui::IsKeyPressed(ImGuiKey_1)) g_ed.tool = Tool::Paint;
+                if (ImGui::IsKeyPressed(ImGuiKey_2)) g_ed.tool = Tool::Line;
+                if (ImGui::IsKeyPressed(ImGuiKey_3)) g_ed.tool = Tool::Erase;
+                if (ImGui::IsKeyPressed(ImGuiKey_4)) g_ed.tool = Tool::Rect;
+                if (ImGui::IsKeyPressed(ImGuiKey_5)) g_ed.tool = Tool::Fill;
+                if (ImGui::IsKeyPressed(ImGuiKey_6)) g_ed.tool = Tool::Select;
+                if (ImGui::IsKeyPressed(ImGuiKey_7)) g_ed.tool = Tool::Eyedropper;
             } else if (!cmd) {
                 if (ImGui::IsKeyPressed(ImGuiKey_0)) g_ed.active_collision_type = 0;
                 if (ImGui::IsKeyPressed(ImGuiKey_1) && g_ed.doc.get_collision_type(1)) g_ed.active_collision_type = 1;
@@ -2379,11 +2597,19 @@ int run_editor() {
                      ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize |
                      ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoSavedSettings);
 
-        // 1. Top toolbar row
-        draw_top_toolbar_row();
+        // 1. Top row: Mode switcher, view toggles, zoom
+        draw_top_nav_and_view_row();
         ImGui::Separator();
 
-        // 2. Body: Left Canvas & Right Sidebar
+        // 2. Second row: All tools
+        draw_tool_selection_row();
+        ImGui::Separator();
+
+        // 3. Third row: Contextual tool options
+        draw_tool_options_row();
+        ImGui::Separator();
+
+        // 4. Body: Left Canvas & Right Sidebar
         const float splitter_w = 6.0f;
         const float status_bar_h = 24.0f;
         const float avail_w = ImGui::GetContentRegionAvail().x;

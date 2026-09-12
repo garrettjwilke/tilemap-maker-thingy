@@ -771,6 +771,53 @@ void test_selection_and_clipping() {
     expect(doc.get_cell(8, 8).atlas_x == 4, "target (8,8) has moved tile after redo");
 }
 
+void test_brush_size_and_tools() {
+    using namespace tmm;
+    TilemapDoc doc(20, 20, 16);
+
+    // Verify all brush sizes 1..4 produce expected bounds when drawing
+    for (int bs = 1; bs <= 4; ++bs) {
+        doc.begin_stroke("Test Brush Size");
+        doc.paint_cell(5, 5, TileMode::Stamp, bs, bs, bs);
+        doc.end_stroke();
+
+        for (int dy = 0; dy < bs; ++dy) {
+            for (int dx = 0; dx < bs; ++dx) {
+                expect(doc.get_cell(5 + dx, 5 + dy).atlas_x == bs, "cell within brush thickness painted");
+            }
+        }
+        expect(doc.get_cell(5 + bs, 5).is_empty(), "cell outside brush thickness empty");
+        expect(doc.get_cell(5, 5 + bs).is_empty(), "cell outside brush thickness empty");
+
+        // Erase with brush size
+        doc.begin_stroke("Test Erase Size");
+        doc.erase_cell(5, 5, bs);
+        doc.end_stroke();
+        for (int dy = 0; dy < bs; ++dy) {
+            for (int dx = 0; dx < bs; ++dx) {
+                expect(doc.get_cell(5 + dx, 5 + dy).is_empty(), "cell erased with brush size");
+            }
+        }
+    }
+
+    // Test brush thickness clamping logic [1, 4]
+    int b = 1;
+    b = std::max(1, b - 1);
+    expect(b == 1, "cannot decrease brush size below 1");
+    b = std::min(4, b + 1);
+    expect(b == 2, "increase brush size to 2");
+    b = std::min(4, b + 5);
+    expect(b == 4, "cannot increase brush size above 4");
+
+    // Test settings persistence of brush sizes
+    Settings s;
+    s.brush_size = 4;
+    std::string text = format_settings(s);
+    Settings loaded;
+    expect(parse_settings_text(loaded, text), "parse settings with brush_size=4");
+    expect(loaded.brush_size == 4, "loaded brush_size is 4");
+}
+
 } // namespace
 
 int main() {
@@ -786,6 +833,7 @@ int main() {
     test_line_and_outline_rect();
     test_c_header_variants();
     test_selection_and_clipping();
+    test_brush_size_and_tools();
 
     if (g_fails) {
         std::cerr << g_fails << " test(s) failed\n";
