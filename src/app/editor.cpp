@@ -69,8 +69,16 @@ struct EditorState {
     // Selection
     bool has_selection = false;
     Rect selection = {0, 0, 0, 0};
+    bool selection_lifted = false;
+    Rect selection_origin = {0, 0, 0, 0};
+    Clipboard floating_clip;
     Clipboard clipboard;
     bool paste_mode = false;
+    Cell paste_pos = {0, 0};
+    bool is_moving_selection = false;
+    Rect selection_drag_origin = {0, 0, 0, 0};
+    bool is_moving_paste = false;
+    Cell paste_drag_origin = {0, 0};
 
     // Modals
     bool show_new_modal = false;
@@ -103,6 +111,12 @@ struct EditorState {
 };
 
 static EditorState g_ed;
+
+static void apply_moved_selection();
+static void deselect();
+static void cancel_or_deselect();
+static void commit_paste();
+static void cancel_paste();
 
 static void update_tileset_texture(SDL_Renderer* renderer) {
     if (g_ed.tileset_texture) {
@@ -381,6 +395,9 @@ static void open_map_dialog(SDL_Renderer* renderer) {
 }
 
 static void save_map_dialog() {
+    if (g_ed.selection_lifted) apply_moved_selection();
+    if (g_ed.paste_mode) commit_paste();
+
     if (!g_ed.current_map_path.empty()) {
         std::string err = save_map_json(g_ed.doc, g_ed.current_map_path);
         if (err.empty()) {
@@ -414,6 +431,9 @@ static void save_map_dialog() {
 }
 
 static void execute_export() {
+    if (g_ed.selection_lifted) apply_moved_selection();
+    if (g_ed.paste_mode) commit_paste();
+
     const char* default_dir = (std::strlen(g_ed.export_folder) > 0)
         ? g_ed.export_folder
         : (!g_ed.settings.last_export_dir.empty() ? g_ed.settings.last_export_dir.c_str() : nullptr);
@@ -506,6 +526,108 @@ static void execute_export() {
     }
     g_ed.status_msg = msg;
     g_ed.show_export_modal = false;
+}
+
+static void apply_moved_selection() {
+    if (!g_ed.has_selection) return;
+    if (g_ed.selection_lifted) {
+        g_ed.doc.paste_clipboard(g_ed.selection.x, g_ed.selection.y, g_ed.floating_clip);
+        g_ed.doc.end_stroke();
+        g_ed.selection_lifted = false;
+        g_ed.floating_clip.clear();
+        g_ed.is_moving_selection = false;
+        g_ed.status_msg = "Applied moved selection.";
+    }
+}
+
+static void cancel_paste() {
+    if (!g_ed.paste_mode) return;
+    g_ed.paste_mode = false;
+    g_ed.has_selection = false;
+    g_ed.doc.set_clip_rect(nullptr);
+    g_ed.is_moving_paste = false;
+    g_ed.status_msg = "Paste cancelled.";
+}
+
+static void commit_paste() {
+    if (!g_ed.paste_mode || g_ed.clipboard.is_empty()) return;
+    g_ed.doc.paste_clipboard(g_ed.paste_pos.x, g_ed.paste_pos.y, g_ed.clipboard);
+    g_ed.paste_mode = false;
+    g_ed.has_selection = true;
+    g_ed.selection = {g_ed.paste_pos.x, g_ed.paste_pos.y, g_ed.clipboard.w, g_ed.clipboard.h};
+    g_ed.doc.set_clip_rect(&g_ed.selection);
+    g_ed.is_moving_paste = false;
+    g_ed.status_msg = "Pasted clipboard contents.";
+}
+
+static void deselect() {
+    if (g_ed.paste_mode) {
+        commit_paste();
+    }
+    if (g_ed.has_selection) {
+        apply_moved_selection();
+        g_ed.has_selection = false;
+        g_ed.selection_lifted = false;
+        g_ed.is_moving_selection = false;
+        g_ed.floating_clip.clear();
+        g_ed.doc.set_clip_rect(nullptr);
+        g_ed.status_msg = "Deselected.";
+    }
+}
+
+static void cancel_or_deselect() {
+    if (g_ed.paste_mode) {
+        cancel_paste();
+        return;
+    }
+    if (g_ed.selection_lifted) {
+        g_ed.doc.cancel_stroke();
+        g_ed.selection = g_ed.selection_origin;
+        g_ed.selection_lifted = false;
+        g_ed.floating_clip.clear();
+        g_ed.is_moving_selection = false;
+        g_ed.has_selection = false;
+        g_ed.doc.set_clip_rect(nullptr);
+        g_ed.status_msg = "Move cancelled.";
+    } else if (g_ed.has_selection) {
+        g_ed.has_selection = false;
+        g_ed.doc.set_clip_rect(nullptr);
+        g_ed.status_msg = "Deselected.";
+    }
+}
+
+static void start_paste() {
+    if (g_ed.clipboard.is_empty()) {
+        g_ed.status_msg = "Clipboard is empty.";
+        return;
+    }
+    if (g_ed.selection_lifted) {
+        apply_moved_selection();
+    }
+    g_ed.paste_mode = true;
+    int px = 0;
+    int py = 0;
+    if (g_ed.hovered_cell.x >= 0 && g_ed.hovered_cell.y >= 0) {
+        px = g_ed.hovered_cell.x;
+        py = g_ed.hovered_cell.y;
+    } else if (g_ed.has_selection) {
+        px = g_ed.selection.x;
+        py = g_ed.selection.y;
+    } else {
+        px = std::max(0, (g_ed.doc.width - g_ed.clipboard.w) / 2);
+        py = std::max(0, (g_ed.doc.height - g_ed.clipboard.h) / 2);
+    }
+    const int max_x = std::max(0, g_ed.doc.width - g_ed.clipboard.w);
+    const int max_y = std::max(0, g_ed.doc.height - g_ed.clipboard.h);
+    px = std::clamp(px, 0, max_x);
+    py = std::clamp(py, 0, max_y);
+    g_ed.paste_pos = {px, py};
+    g_ed.selection = {px, py, g_ed.clipboard.w, g_ed.clipboard.h};
+    g_ed.has_selection = true;
+    g_ed.selection_lifted = false;
+    g_ed.doc.set_clip_rect(&g_ed.selection);
+    g_ed.is_moving_paste = false;
+    g_ed.status_msg = "Pasting: Drag or use Arrows to move. Enter or click outside to commit, Esc to cancel.";
 }
 
 struct ScopedStyleColor {
@@ -1175,8 +1297,46 @@ static void draw_canvas_viewport_content() {
         g_ed.hovered_cell = {-1, -1};
     }
 
+    // Draw floating preview (for paste or moving selection)
+    const bool show_floating_paste = (g_ed.paste_mode && !g_ed.clipboard.is_empty());
+    const bool show_floating_selection = (g_ed.selection_lifted && !g_ed.floating_clip.is_empty());
+    if (show_floating_paste || show_floating_selection) {
+        const auto& clip_cells = show_floating_paste ? g_ed.clipboard.cells : g_ed.floating_clip.cells;
+        const int base_x = show_floating_paste ? g_ed.paste_pos.x : g_ed.selection.x;
+        const int base_y = show_floating_paste ? g_ed.paste_pos.y : g_ed.selection.y;
+
+        for (const auto& item : clip_cells) {
+            const int cx = base_x + item.first.x;
+            const int cy = base_y + item.first.y;
+            const MapCell& cell = item.second;
+            if (cell.is_empty()) continue;
+
+            const float x0 = cell_to_screen_x(cx);
+            const float y0 = cell_to_screen_y(cy);
+            const float x1 = cell_to_screen_x(cx + 1);
+            const float y1 = cell_to_screen_y(cy + 1);
+
+            if (x1 < canvas_p0.x || y1 < canvas_p0.y || x0 > canvas_p1.x || y0 > canvas_p1.y) {
+                continue;
+            }
+
+            if (has_texture && cell.atlas_x >= 0 && cell.atlas_y >= 0) {
+                const float u0 = static_cast<float>(cell.atlas_x * ts) * inv_tex_w;
+                const float v0 = static_cast<float>(cell.atlas_y * ts) * inv_tex_h;
+                const float u1 = static_cast<float>((cell.atlas_x + 1) * ts) * inv_tex_w;
+                const float v1 = static_cast<float>((cell.atlas_y + 1) * ts) * inv_tex_h;
+                draw_list->AddImage(reinterpret_cast<ImTextureID>(g_ed.tileset_texture),
+                                    ImVec2(x0, y0), ImVec2(x1, y1),
+                                    ImVec2(u0, v0), ImVec2(u1, v1),
+                                    IM_COL32(255, 255, 255, 255));
+            } else {
+                draw_list->AddRectFilled(ImVec2(x0, y0), ImVec2(x1, y1), IM_COL32(100, 200, 255, 180));
+            }
+        }
+    }
+
     // Brush / Tool Preview
-    if (is_hovered && !space_down && in_map) {
+    if (is_hovered && !space_down && in_map && !g_ed.paste_mode) {
         const int bs = (g_ed.tool == Tool::Paint || g_ed.tool == Tool::Line || g_ed.tool == Tool::Erase || (g_ed.tool == Tool::Rect && !g_ed.rect_fill)) ? g_ed.brush_size : 1;
         const float bx0 = cell_to_screen_x(cell_x);
         const float by0 = cell_to_screen_y(cell_y);
@@ -1215,11 +1375,42 @@ static void draw_canvas_viewport_content() {
         draw_list->AddCallback(platform_io.DrawCallback_SetSamplerLinear, nullptr);
     }
 
+    const bool in_paste_rect = g_ed.paste_mode &&
+        (cell_x >= g_ed.paste_pos.x && cell_x < g_ed.paste_pos.x + g_ed.clipboard.w &&
+         cell_y >= g_ed.paste_pos.y && cell_y < g_ed.paste_pos.y + g_ed.clipboard.h);
+    const bool in_sel_rect = g_ed.has_selection && !g_ed.paste_mode &&
+        (cell_x >= g_ed.selection.x && cell_x < g_ed.selection.right() &&
+         cell_y >= g_ed.selection.y && cell_y < g_ed.selection.bottom());
+
+    if (is_hovered && !space_down) {
+        if (in_paste_rect || (in_sel_rect && g_ed.tool == Tool::Select)) {
+            ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeAll);
+        }
+    }
+
     // Interactive Drawing on Canvas
     const bool left_clicked = is_hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left) && !space_down;
     const bool right_clicked = is_hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Right) && !space_down;
 
-    if (left_clicked || right_clicked) {
+    if (g_ed.paste_mode) {
+        if (left_clicked) {
+            if (in_paste_rect) {
+                g_ed.is_drawing = true;
+                g_ed.is_moving_paste = true;
+                g_ed.paste_drag_origin = g_ed.paste_pos;
+                g_ed.drag_start = {cell_x, cell_y};
+            } else {
+                commit_paste();
+            }
+        } else if (right_clicked) {
+            cancel_paste();
+        }
+    } else if (right_clicked && g_ed.tool == Tool::Select) {
+        deselect();
+    } else if (left_clicked || right_clicked) {
+        if (g_ed.selection_lifted && g_ed.tool != Tool::Select) {
+            apply_moved_selection();
+        }
         g_ed.is_drawing = true;
         g_ed.drag_start = {cell_x, cell_y};
         g_ed.last_mouse_cell = {cell_x, cell_y};
@@ -1228,17 +1419,34 @@ static void draw_canvas_viewport_content() {
         g_ed.stroke_points.push_back(ImVec2(rel_x, rel_y));
         g_ed.right_click_erasing = right_clicked;
 
-        if (g_ed.paste_mode && left_clicked) {
-            g_ed.doc.paste_clipboard(cell_x, cell_y, g_ed.clipboard);
-            g_ed.paste_mode = false;
-            g_ed.is_drawing = false;
+        if (g_ed.tool == Tool::Select && !g_ed.right_click_erasing) {
+            if (in_sel_rect) {
+                if (!g_ed.selection_lifted) {
+                    g_ed.selection_origin = g_ed.selection;
+                    g_ed.floating_clip = g_ed.doc.copy_rect(g_ed.selection);
+                    g_ed.doc.begin_stroke("Move Selection");
+                    g_ed.doc.erase_rect(g_ed.selection);
+                    g_ed.selection_lifted = true;
+                }
+                g_ed.is_moving_selection = true;
+                g_ed.selection_drag_origin = g_ed.selection;
+                g_ed.drag_start = {cell_x, cell_y};
+            } else {
+                if (g_ed.selection_lifted) {
+                    apply_moved_selection();
+                }
+                g_ed.is_moving_selection = false;
+            }
         } else if (g_ed.tool == Tool::Paint && !g_ed.right_click_erasing) {
+            g_ed.is_moving_selection = false;
             g_ed.doc.begin_stroke(g_ed.paint_mode == TileMode::Terrain ? "Paint Terrain" : "Paint Stamp");
             g_ed.doc.paint_cell(cell_x, cell_y, g_ed.paint_mode, g_ed.stamp_col, g_ed.stamp_row, g_ed.brush_size);
         } else if ((g_ed.tool == Tool::Erase || g_ed.right_click_erasing) && g_ed.tool != Tool::Line && g_ed.tool != Tool::Rect && g_ed.tool != Tool::Select) {
+            g_ed.is_moving_selection = false;
             g_ed.doc.begin_stroke("Erase");
             g_ed.doc.erase_cell(cell_x, cell_y, g_ed.brush_size);
         } else if (g_ed.tool == Tool::Fill) {
+            g_ed.is_moving_selection = false;
             if (g_ed.right_click_erasing) {
                 g_ed.doc.flood_fill(cell_x, cell_y, TileMode::Empty);
             } else {
@@ -1246,6 +1454,7 @@ static void draw_canvas_viewport_content() {
             }
             g_ed.is_drawing = false;
         } else if (g_ed.tool == Tool::Eyedropper) {
+            g_ed.is_moving_selection = false;
             const MapCell& mc = g_ed.doc.get_cell(cell_x, cell_y);
             if (!mc.is_empty()) {
                 g_ed.stamp_col = mc.atlas_x;
@@ -1258,7 +1467,37 @@ static void draw_canvas_viewport_content() {
     }
 
     if (g_ed.is_drawing) {
-        if (ImGui::IsMouseDown(ImGuiMouseButton_Left) || ImGui::IsMouseDown(ImGuiMouseButton_Right)) {
+        if (g_ed.is_moving_paste) {
+            if (ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+                const int dx = cell_x - g_ed.drag_start.x;
+                const int dy = cell_y - g_ed.drag_start.y;
+                const int max_x = std::max(0, g_ed.doc.width - g_ed.clipboard.w);
+                const int max_y = std::max(0, g_ed.doc.height - g_ed.clipboard.h);
+                g_ed.paste_pos.x = std::clamp(g_ed.paste_drag_origin.x + dx, 0, max_x);
+                g_ed.paste_pos.y = std::clamp(g_ed.paste_drag_origin.y + dy, 0, max_y);
+                g_ed.selection.x = g_ed.paste_pos.x;
+                g_ed.selection.y = g_ed.paste_pos.y;
+                g_ed.doc.set_clip_rect(&g_ed.selection);
+            } else {
+                g_ed.is_moving_paste = false;
+                g_ed.is_drawing = false;
+            }
+        } else if (g_ed.is_moving_selection) {
+            if (ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+                const int dx = cell_x - g_ed.drag_start.x;
+                const int dy = cell_y - g_ed.drag_start.y;
+                const int max_x = std::max(0, g_ed.doc.width - g_ed.selection.w);
+                const int max_y = std::max(0, g_ed.doc.height - g_ed.selection.h);
+                g_ed.selection.x = std::clamp(g_ed.selection_drag_origin.x + dx, 0, max_x);
+                g_ed.selection.y = std::clamp(g_ed.selection_drag_origin.y + dy, 0, max_y);
+                g_ed.doc.set_clip_rect(&g_ed.selection);
+            } else {
+                g_ed.is_moving_selection = false;
+                g_ed.is_drawing = false;
+                g_ed.doc.set_clip_rect(&g_ed.selection);
+                g_ed.status_msg = "Moved selection (floating). Press Ctrl+D or right-click to apply.";
+            }
+        } else if (ImGui::IsMouseDown(ImGuiMouseButton_Left) || ImGui::IsMouseDown(ImGuiMouseButton_Right)) {
             if (g_ed.tool == Tool::Paint || g_ed.tool == Tool::Erase || (g_ed.right_click_erasing && g_ed.tool != Tool::Line && g_ed.tool != Tool::Rect && g_ed.tool != Tool::Select)) {
                 auto paint_or_erase_cell = [&](int cx, int cy) {
                     if (cx == g_ed.last_painted_cell.x && cy == g_ed.last_painted_cell.y) {
@@ -1307,7 +1546,6 @@ static void draw_canvas_viewport_content() {
                     const ImVec2 p0 = (n >= 3) ? g_ed.stroke_points[n - 3] : ImVec2(2.0f * p1.x - p2.x, 2.0f * p1.y - p2.y);
                     const ImVec2 p3 = ImVec2(2.0f * p2.x - p1.x, 2.0f * p2.y - p1.y);
 
-                    // Step along the curve with sub-tile increments so no intermediate cells are skipped
                     const int steps = std::min(500, std::max(1, static_cast<int>(std::ceil(dist / 0.2f))));
                     for (int s = 1; s <= steps; ++s) {
                         const float t = static_cast<float>(s) / static_cast<float>(steps);
@@ -1371,10 +1609,12 @@ static void draw_canvas_viewport_content() {
                 draw_list->AddLine(ImVec2(start_center_x, start_center_y), ImVec2(curr_center_x, curr_center_y),
                                    g_ed.right_click_erasing ? IM_COL32(255, 100, 100, 220) : IM_COL32(120, 255, 160, 220), 1.5f);
             } else if (g_ed.tool == Tool::Rect || g_ed.tool == Tool::Select) {
-                const int rx = std::min(g_ed.drag_start.x, cell_x);
-                const int ry = std::min(g_ed.drag_start.y, cell_y);
-                const int rw = std::abs(cell_x - g_ed.drag_start.x) + 1;
-                const int rh = std::abs(cell_y - g_ed.drag_start.y) + 1;
+                const int rx = std::clamp(std::min(g_ed.drag_start.x, cell_x), 0, g_ed.doc.width - 1);
+                const int ry = std::clamp(std::min(g_ed.drag_start.y, cell_y), 0, g_ed.doc.height - 1);
+                const int rx2 = std::clamp(std::max(g_ed.drag_start.x, cell_x), 0, g_ed.doc.width - 1);
+                const int ry2 = std::clamp(std::max(g_ed.drag_start.y, cell_y), 0, g_ed.doc.height - 1);
+                const int rw = rx2 - rx + 1;
+                const int rh = ry2 - ry + 1;
                 const float rpx0 = cell_to_screen_x(rx);
                 const float rpy0 = cell_to_screen_y(ry);
                 const float rpx1 = cell_to_screen_x(rx + rw);
@@ -1436,12 +1676,15 @@ static void draw_canvas_viewport_content() {
                     }
                 }
             } else if (g_ed.tool == Tool::Select) {
-                const int rx = std::min(g_ed.drag_start.x, cell_x);
-                const int ry = std::min(g_ed.drag_start.y, cell_y);
-                const int rw = std::abs(cell_x - g_ed.drag_start.x) + 1;
-                const int rh = std::abs(cell_y - g_ed.drag_start.y) + 1;
-                g_ed.selection = {rx, ry, rw, rh};
+                const int rx = std::clamp(std::min(g_ed.drag_start.x, cell_x), 0, g_ed.doc.width - 1);
+                const int ry = std::clamp(std::min(g_ed.drag_start.y, cell_y), 0, g_ed.doc.height - 1);
+                const int rx2 = std::clamp(std::max(g_ed.drag_start.x, cell_x), 0, g_ed.doc.width - 1);
+                const int ry2 = std::clamp(std::max(g_ed.drag_start.y, cell_y), 0, g_ed.doc.height - 1);
+                g_ed.selection = {rx, ry, rx2 - rx + 1, ry2 - ry + 1};
                 g_ed.has_selection = true;
+                g_ed.selection_lifted = false;
+                g_ed.floating_clip.clear();
+                g_ed.doc.set_clip_rect(&g_ed.selection);
             }
             g_ed.is_drawing = false;
         }
@@ -1453,7 +1696,13 @@ static void draw_canvas_viewport_content() {
         const float spy0 = cell_to_screen_y(g_ed.selection.y);
         const float spx1 = cell_to_screen_x(g_ed.selection.x + g_ed.selection.w);
         const float spy1 = cell_to_screen_y(g_ed.selection.y + g_ed.selection.h);
-        draw_list->AddRect(ImVec2(spx0, spy0), ImVec2(spx1, spy1), IM_COL32(255, 230, 80, 255), 0.0f, 0, 2.0f);
+        const ImU32 box_col = g_ed.paste_mode ? IM_COL32(80, 220, 255, 255) : (g_ed.selection_lifted ? IM_COL32(255, 210, 50, 255) : IM_COL32(255, 230, 80, 255));
+        draw_list->AddRect(ImVec2(spx0, spy0), ImVec2(spx1, spy1), box_col, 0.0f, 0, 2.0f);
+        if (g_ed.paste_mode) {
+            draw_list->AddRectFilled(ImVec2(spx0, spy0), ImVec2(spx1, spy1), IM_COL32(60, 180, 255, 40));
+        } else if (g_ed.selection_lifted) {
+            draw_list->AddRect(ImVec2(spx0 - 1, spy0 - 1), ImVec2(spx1 + 1, spy1 + 1), IM_COL32(0, 0, 0, 160), 0.0f, 0, 1.0f);
+        }
     }
 
     draw_list->PopClipRect();
@@ -1827,9 +2076,20 @@ int run_editor() {
             SDL_Delay(32);
         }
 
-        // Global shortcuts
+        ImGui_ImplSDLRenderer3_NewFrame();
+        ImGui_ImplSDL3_NewFrame();
+        ImGui::NewFrame();
+
+        // Synchronize clip rect with active selection
+        g_ed.doc.set_clip_rect(g_ed.has_selection ? &g_ed.selection : nullptr);
+
+        // Global shortcuts (processed after NewFrame so input events are current)
         if (!io.WantTextInput) {
             const bool cmd = io.KeyCtrl || io.KeySuper;
+
+            if (cmd && ImGui::IsKeyPressed(ImGuiKey_D)) {
+                deselect();
+            }
             if (cmd && ImGui::IsKeyPressed(ImGuiKey_0)) {
                 g_ed.zoom = 1.0f;
             }
@@ -1840,11 +2100,18 @@ int run_editor() {
                 g_ed.zoom = std::max(0.25f, g_ed.zoom / 1.25f);
             }
             if (cmd && ImGui::IsKeyPressed(ImGuiKey_Z)) {
-                if (io.KeyShift) g_ed.doc.redo();
-                else g_ed.doc.undo();
+                if (g_ed.selection_lifted) {
+                    cancel_or_deselect();
+                } else if (io.KeyShift) {
+                    g_ed.doc.redo();
+                } else {
+                    g_ed.doc.undo();
+                }
             }
             if (cmd && ImGui::IsKeyPressed(ImGuiKey_Y)) {
-                g_ed.doc.redo();
+                if (!g_ed.selection_lifted) {
+                    g_ed.doc.redo();
+                }
             }
             if (cmd && ImGui::IsKeyPressed(ImGuiKey_S)) {
                 save_map_dialog();
@@ -1858,29 +2125,107 @@ int run_editor() {
             if (cmd && ImGui::IsKeyPressed(ImGuiKey_E)) {
                 execute_export();
             }
-            if (cmd && ImGui::IsKeyPressed(ImGuiKey_C) && g_ed.has_selection) {
-                g_ed.clipboard = g_ed.doc.copy_rect(g_ed.selection);
+            if (cmd && ImGui::IsKeyPressed(ImGuiKey_C) && g_ed.has_selection && !g_ed.paste_mode) {
+                if (g_ed.selection_lifted) {
+                    g_ed.clipboard = g_ed.floating_clip;
+                } else {
+                    g_ed.clipboard = g_ed.doc.copy_rect(g_ed.selection);
+                }
                 g_ed.status_msg = "Copied selection.";
             }
-            if (cmd && ImGui::IsKeyPressed(ImGuiKey_X) && g_ed.has_selection) {
-                g_ed.doc.cut_rect(g_ed.selection, g_ed.clipboard);
-                g_ed.has_selection = false;
+            if (cmd && ImGui::IsKeyPressed(ImGuiKey_X) && g_ed.has_selection && !g_ed.paste_mode) {
+                if (g_ed.selection_lifted) {
+                    g_ed.clipboard = g_ed.floating_clip;
+                    g_ed.floating_clip.clear();
+                    g_ed.doc.end_stroke();
+                    g_ed.selection_lifted = false;
+                    g_ed.has_selection = false;
+                    g_ed.doc.set_clip_rect(nullptr);
+                } else {
+                    g_ed.doc.cut_rect(g_ed.selection, g_ed.clipboard);
+                    g_ed.has_selection = false;
+                    g_ed.doc.set_clip_rect(nullptr);
+                }
                 g_ed.status_msg = "Cut selection.";
             }
             if (cmd && ImGui::IsKeyPressed(ImGuiKey_V) && !g_ed.clipboard.is_empty()) {
-                g_ed.paste_mode = true;
-                g_ed.status_msg = "Click on canvas to paste.";
-            }
-            if (ImGui::IsKeyPressed(ImGuiKey_Escape)) {
-                g_ed.has_selection = false;
-                g_ed.paste_mode = false;
-            }
-            if ((ImGui::IsKeyPressed(ImGuiKey_Delete) || ImGui::IsKeyPressed(ImGuiKey_Backspace)) && g_ed.has_selection) {
-                g_ed.doc.erase_rect(g_ed.selection);
-                g_ed.has_selection = false;
+                start_paste();
             }
 
-            if (g_ed.view_mode == EditorViewMode::Tilemap) {
+            // Keyboard navigation for floating paste or selection
+            if (g_ed.paste_mode) {
+                if (ImGui::IsKeyPressed(ImGuiKey_Enter) || ImGui::IsKeyPressed(ImGuiKey_KeypadEnter)) {
+                    commit_paste();
+                } else if (ImGui::IsKeyPressed(ImGuiKey_Escape) || ImGui::IsKeyPressed(ImGuiKey_Delete) || ImGui::IsKeyPressed(ImGuiKey_Backspace)) {
+                    cancel_paste();
+                } else {
+                    int dx = 0;
+                    int dy = 0;
+                    if (ImGui::IsKeyPressed(ImGuiKey_LeftArrow, true))  dx -= 1;
+                    if (ImGui::IsKeyPressed(ImGuiKey_RightArrow, true)) dx += 1;
+                    if (ImGui::IsKeyPressed(ImGuiKey_UpArrow, true))    dy -= 1;
+                    if (ImGui::IsKeyPressed(ImGuiKey_DownArrow, true))  dy += 1;
+                    if (dx != 0 || dy != 0) {
+                        const int max_x = std::max(0, g_ed.doc.width - g_ed.clipboard.w);
+                        const int max_y = std::max(0, g_ed.doc.height - g_ed.clipboard.h);
+                        g_ed.paste_pos.x = std::clamp(g_ed.paste_pos.x + dx, 0, max_x);
+                        g_ed.paste_pos.y = std::clamp(g_ed.paste_pos.y + dy, 0, max_y);
+                        g_ed.selection.x = g_ed.paste_pos.x;
+                        g_ed.selection.y = g_ed.paste_pos.y;
+                        g_ed.doc.set_clip_rect(&g_ed.selection);
+                    }
+                }
+            } else {
+                if (ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+                    cancel_or_deselect();
+                }
+                if (g_ed.selection_lifted && (ImGui::IsKeyPressed(ImGuiKey_Enter) || ImGui::IsKeyPressed(ImGuiKey_KeypadEnter))) {
+                    apply_moved_selection();
+                }
+                if ((ImGui::IsKeyPressed(ImGuiKey_Delete) || ImGui::IsKeyPressed(ImGuiKey_Backspace)) && g_ed.has_selection) {
+                    if (g_ed.selection_lifted) {
+                        g_ed.doc.end_stroke();
+                        g_ed.selection_lifted = false;
+                        g_ed.floating_clip.clear();
+                        g_ed.is_moving_selection = false;
+                        g_ed.has_selection = false;
+                        g_ed.doc.set_clip_rect(nullptr);
+                        g_ed.status_msg = "Deleted selected tiles.";
+                    } else {
+                        g_ed.doc.erase_rect(g_ed.selection);
+                        g_ed.status_msg = "Cleared selection.";
+                    }
+                }
+                if (g_ed.has_selection && !g_ed.is_moving_selection) {
+                    int dx = 0;
+                    int dy = 0;
+                    if (ImGui::IsKeyPressed(ImGuiKey_LeftArrow, true))  dx -= 1;
+                    if (ImGui::IsKeyPressed(ImGuiKey_RightArrow, true)) dx += 1;
+                    if (ImGui::IsKeyPressed(ImGuiKey_UpArrow, true))    dy -= 1;
+                    if (ImGui::IsKeyPressed(ImGuiKey_DownArrow, true))  dy += 1;
+                    if (dx != 0 || dy != 0) {
+                        const int max_x = std::max(0, g_ed.doc.width - g_ed.selection.w);
+                        const int max_y = std::max(0, g_ed.doc.height - g_ed.selection.h);
+                        const int target_x = std::clamp(g_ed.selection.x + dx, 0, max_x);
+                        const int target_y = std::clamp(g_ed.selection.y + dy, 0, max_y);
+                        if (target_x != g_ed.selection.x || target_y != g_ed.selection.y) {
+                            if (!g_ed.selection_lifted) {
+                                g_ed.selection_origin = g_ed.selection;
+                                g_ed.floating_clip = g_ed.doc.copy_rect(g_ed.selection);
+                                g_ed.doc.begin_stroke("Move Selection");
+                                g_ed.doc.erase_rect(g_ed.selection);
+                                g_ed.selection_lifted = true;
+                            }
+                            g_ed.selection.x = target_x;
+                            g_ed.selection.y = target_y;
+                            g_ed.doc.set_clip_rect(&g_ed.selection);
+                            g_ed.status_msg = "Moved selection (floating). Press Ctrl+D or right-click to apply.";
+                        }
+                    }
+                }
+            }
+
+            if (g_ed.view_mode == EditorViewMode::Tilemap && !cmd) {
                 if (ImGui::IsKeyPressed(ImGuiKey_1) || ImGui::IsKeyPressed(ImGuiKey_P)) g_ed.tool = Tool::Paint;
                 if (ImGui::IsKeyPressed(ImGuiKey_2) || ImGui::IsKeyPressed(ImGuiKey_L)) g_ed.tool = Tool::Line;
                 if (ImGui::IsKeyPressed(ImGuiKey_3) || ImGui::IsKeyPressed(ImGuiKey_E)) g_ed.tool = Tool::Erase;
@@ -1888,7 +2233,7 @@ int run_editor() {
                 if (ImGui::IsKeyPressed(ImGuiKey_5) || ImGui::IsKeyPressed(ImGuiKey_F)) g_ed.tool = Tool::Fill;
                 if (ImGui::IsKeyPressed(ImGuiKey_6) || ImGui::IsKeyPressed(ImGuiKey_S)) g_ed.tool = Tool::Select;
                 if (ImGui::IsKeyPressed(ImGuiKey_7) || ImGui::IsKeyPressed(ImGuiKey_I)) g_ed.tool = Tool::Eyedropper;
-            } else {
+            } else if (!cmd) {
                 if (ImGui::IsKeyPressed(ImGuiKey_0)) g_ed.active_collision_type = 0;
                 if (ImGui::IsKeyPressed(ImGuiKey_1) && g_ed.doc.get_collision_type(1)) g_ed.active_collision_type = 1;
                 if (ImGui::IsKeyPressed(ImGuiKey_2) && g_ed.doc.get_collision_type(2)) g_ed.active_collision_type = 2;
@@ -1896,10 +2241,6 @@ int run_editor() {
                 if (ImGui::IsKeyPressed(ImGuiKey_4) && g_ed.doc.get_collision_type(4)) g_ed.active_collision_type = 4;
             }
         }
-
-        ImGui_ImplSDLRenderer3_NewFrame();
-        ImGui_ImplSDL3_NewFrame();
-        ImGui::NewFrame();
 
         // Main Menu Bar
         if (ImGui::BeginMainMenuBar()) {
@@ -1930,25 +2271,55 @@ int run_editor() {
                 ImGui::EndMenu();
             }
             if (ImGui::BeginMenu("Edit")) {
-                if (ImGui::MenuItem("Undo", "Ctrl+Z", false, g_ed.doc.can_undo())) {
-                    g_ed.doc.undo();
+                if (ImGui::MenuItem("Undo", "Ctrl+Z", false, g_ed.selection_lifted || g_ed.doc.can_undo())) {
+                    if (g_ed.selection_lifted) cancel_or_deselect();
+                    else g_ed.doc.undo();
                 }
-                if (ImGui::MenuItem("Redo", "Ctrl+Y", false, g_ed.doc.can_redo())) {
+                if (ImGui::MenuItem("Redo", "Ctrl+Y", false, !g_ed.selection_lifted && g_ed.doc.can_redo())) {
                     g_ed.doc.redo();
                 }
                 ImGui::Separator();
-                if (ImGui::MenuItem("Cut", "Ctrl+X", false, g_ed.has_selection)) {
-                    g_ed.doc.cut_rect(g_ed.selection, g_ed.clipboard);
-                    g_ed.has_selection = false;
+                if (ImGui::MenuItem("Cut", "Ctrl+X", false, g_ed.has_selection && !g_ed.paste_mode)) {
+                    if (g_ed.selection_lifted) {
+                        g_ed.clipboard = g_ed.floating_clip;
+                        g_ed.floating_clip.clear();
+                        g_ed.doc.end_stroke();
+                        g_ed.selection_lifted = false;
+                        g_ed.has_selection = false;
+                        g_ed.doc.set_clip_rect(nullptr);
+                    } else {
+                        g_ed.doc.cut_rect(g_ed.selection, g_ed.clipboard);
+                        g_ed.has_selection = false;
+                        g_ed.doc.set_clip_rect(nullptr);
+                    }
+                    g_ed.status_msg = "Cut selection.";
                 }
-                if (ImGui::MenuItem("Copy", "Ctrl+C", false, g_ed.has_selection)) {
-                    g_ed.clipboard = g_ed.doc.copy_rect(g_ed.selection);
+                if (ImGui::MenuItem("Copy", "Ctrl+C", false, g_ed.has_selection && !g_ed.paste_mode)) {
+                    if (g_ed.selection_lifted) {
+                        g_ed.clipboard = g_ed.floating_clip;
+                    } else {
+                        g_ed.clipboard = g_ed.doc.copy_rect(g_ed.selection);
+                    }
+                    g_ed.status_msg = "Copied selection.";
                 }
                 if (ImGui::MenuItem("Paste", "Ctrl+V", false, !g_ed.clipboard.is_empty())) {
-                    g_ed.paste_mode = true;
+                    start_paste();
                 }
-                if (ImGui::MenuItem("Deselect", "Esc", false, g_ed.has_selection)) {
-                    g_ed.has_selection = false;
+                if (ImGui::MenuItem("Clear Selection", "Del", false, g_ed.has_selection && !g_ed.paste_mode)) {
+                    if (g_ed.selection_lifted) {
+                        g_ed.doc.end_stroke();
+                        g_ed.selection_lifted = false;
+                        g_ed.floating_clip.clear();
+                        g_ed.has_selection = false;
+                        g_ed.doc.set_clip_rect(nullptr);
+                        g_ed.status_msg = "Deleted selected tiles.";
+                    } else {
+                        g_ed.doc.erase_rect(g_ed.selection);
+                        g_ed.status_msg = "Cleared selection.";
+                    }
+                }
+                if (ImGui::MenuItem("Deselect", "Ctrl+D", false, g_ed.has_selection || g_ed.paste_mode)) {
+                    deselect();
                 }
                 ImGui::Separator();
                 if (ImGui::MenuItem("Resize Canvas…")) {

@@ -106,6 +106,20 @@ void TilemapDoc::end_stroke() {
     pending_recorded_.clear();
 }
 
+void TilemapDoc::cancel_stroke() {
+    if (!stroke_in_progress_) return;
+    stroke_in_progress_ = false;
+    for (auto it = pending_changes_.rbegin(); it != pending_changes_.rend(); ++it) {
+        if (in_bounds(it->pos.x, it->pos.y)) {
+            cells_[static_cast<size_t>(it->pos.y * width + it->pos.x)] = it->old_cell;
+        }
+    }
+    pending_changes_.clear();
+    pending_recorded_.clear();
+    solve_all_autotiles();
+    mark_dirty();
+}
+
 bool TilemapDoc::undo() {
     if (undo_stack_.empty()) return false;
     UndoAction act = std::move(undo_stack_.back());
@@ -225,6 +239,7 @@ void TilemapDoc::paint_cell(int x, int y, TileMode mode, int stamp_col, int stam
             const int cx = x + bx;
             const int cy = y + by;
             if (!in_bounds(cx, cy)) continue;
+            if (!in_clip(cx, cy)) continue;
             record_cell_internal(cx, cy);
             MapCell& c = cells_[static_cast<size_t>(cy * width + cx)];
             c.mode = mode;
@@ -249,6 +264,7 @@ void TilemapDoc::erase_cell(int x, int y, int brush_size) {
             const int cx = x + bx;
             const int cy = y + by;
             if (!in_bounds(cx, cy)) continue;
+            if (!in_clip(cx, cy)) continue;
             record_cell_internal(cx, cy);
             cells_[static_cast<size_t>(cy * width + cx)] = MapCell{};
         }
@@ -275,6 +291,7 @@ void TilemapDoc::draw_line(int x0, int y0, int x1, int y1, TileMode mode, int st
                 const int cx = x + bx;
                 const int cy = y + by;
                 if (!in_bounds(cx, cy)) continue;
+                if (!in_clip(cx, cy)) continue;
                 record_cell_internal(cx, cy);
                 MapCell& c = cells_[static_cast<size_t>(cy * width + cx)];
                 c.mode = mode;
@@ -317,6 +334,7 @@ void TilemapDoc::erase_line(int x0, int y0, int x1, int y1, int brush_size) {
                 const int cx = x + bx;
                 const int cy = y + by;
                 if (!in_bounds(cx, cy)) continue;
+                if (!in_clip(cx, cy)) continue;
                 record_cell_internal(cx, cy);
                 cells_[static_cast<size_t>(cy * width + cx)] = MapCell{};
             }
@@ -339,6 +357,7 @@ void TilemapDoc::outline_rect(const Rect& rect, TileMode mode, int stamp_col, in
     for (int y = rect.y; y < rect.bottom(); ++y) {
         for (int x = rect.x; x < rect.right(); ++x) {
             if (!in_bounds(x, y)) continue;
+            if (!in_clip(x, y)) continue;
             const bool is_border = (x < rect.x + brush_size || x >= rect.right() - brush_size ||
                                     y < rect.y + brush_size || y >= rect.bottom() - brush_size);
             if (!is_border) continue;
@@ -366,6 +385,7 @@ void TilemapDoc::erase_outline_rect(const Rect& rect, int brush_size) {
     for (int y = rect.y; y < rect.bottom(); ++y) {
         for (int x = rect.x; x < rect.right(); ++x) {
             if (!in_bounds(x, y)) continue;
+            if (!in_clip(x, y)) continue;
             const bool is_border = (x < rect.x + brush_size || x >= rect.right() - brush_size ||
                                     y < rect.y + brush_size || y >= rect.bottom() - brush_size);
             if (!is_border) continue;
@@ -384,6 +404,7 @@ void TilemapDoc::fill_rect(const Rect& rect, TileMode mode, int stamp_col, int s
     for (int y = rect.y; y < rect.bottom(); ++y) {
         for (int x = rect.x; x < rect.right(); ++x) {
             if (!in_bounds(x, y)) continue;
+            if (!in_clip(x, y)) continue;
             record_cell_internal(x, y);
             MapCell& c = cells_[static_cast<size_t>(y * width + x)];
             c.mode = mode;
@@ -400,7 +421,10 @@ void TilemapDoc::fill_rect(const Rect& rect, TileMode mode, int stamp_col, int s
 }
 
 void TilemapDoc::erase_rect(const Rect& rect) {
-    begin_stroke("Erase Rect");
+    const bool local_stroke = !stroke_in_progress_;
+    if (local_stroke) {
+        begin_stroke("Erase Rect");
+    }
     for (int y = rect.y; y < rect.bottom(); ++y) {
         for (int x = rect.x; x < rect.right(); ++x) {
             if (!in_bounds(x, y)) continue;
@@ -409,11 +433,14 @@ void TilemapDoc::erase_rect(const Rect& rect) {
         }
     }
     solve_all_autotiles();
-    end_stroke();
+    if (local_stroke) {
+        end_stroke();
+    }
 }
 
 void TilemapDoc::flood_fill(int start_x, int start_y, TileMode mode, int stamp_col, int stamp_row) {
     if (!in_bounds(start_x, start_y)) return;
+    if (!in_clip(start_x, start_y)) return;
     const MapCell target_cell = get_cell(start_x, start_y);
     if (mode == target_cell.mode) {
         if (mode == TileMode::Stamp && target_cell.atlas_x == stamp_col && target_cell.atlas_y == stamp_row) {
@@ -428,6 +455,7 @@ void TilemapDoc::flood_fill(int start_x, int start_y, TileMode mode, int stamp_c
 
     auto matches = [&](int x, int y) -> bool {
         if (!in_bounds(x, y)) return false;
+        if (!in_clip(x, y)) return false;
         const MapCell& c = get_cell(x, y);
         if (mode == TileMode::Terrain && target_cell.mode == TileMode::Terrain) {
             return c.mode == TileMode::Terrain;
@@ -491,7 +519,10 @@ void TilemapDoc::cut_rect(const Rect& rect, Clipboard& clip) {
 
 void TilemapDoc::paste_clipboard(int x, int y, const Clipboard& clip) {
     if (clip.is_empty()) return;
-    begin_stroke("Paste");
+    const bool local_stroke = !stroke_in_progress_;
+    if (local_stroke) {
+        begin_stroke("Paste");
+    }
     for (const auto& item : clip.cells) {
         const int dest_x = x + item.first.x;
         const int dest_y = y + item.first.y;
@@ -501,7 +532,9 @@ void TilemapDoc::paste_clipboard(int x, int y, const Clipboard& clip) {
         }
     }
     solve_all_autotiles();
-    end_stroke();
+    if (local_stroke) {
+        end_stroke();
+    }
 }
 
 bool TilemapDoc::would_lose_tiles(int new_w, int new_h, int anchor_x, int anchor_y) const {

@@ -613,6 +613,164 @@ void test_c_header_variants() {
     std::remove(hpath.c_str());
 }
 
+void test_selection_and_clipping() {
+    using namespace tmm;
+    TilemapDoc doc(20, 20, 16);
+
+    // 1. in_clip without clip rect returns true everywhere
+    expect(doc.get_clip_rect() == nullptr, "initial clip rect should be null");
+    expect(doc.in_clip(0, 0), "in_clip(0,0) without clip");
+    expect(doc.in_clip(5, 5), "in_clip(5,5) without clip");
+
+    // 2. Set clip rect to [4, 4, 6, 6] (x: 4..9, y: 4..9)
+    Rect clip{4, 4, 6, 6};
+    doc.set_clip_rect(&clip);
+    expect(doc.get_clip_rect() != nullptr, "clip rect should be set");
+    expect(doc.get_clip_rect()->x == 4 && doc.get_clip_rect()->w == 6, "clip rect coordinates");
+
+    expect(doc.in_clip(4, 4), "in_clip top-left corner");
+    expect(doc.in_clip(9, 9), "in_clip bottom-right corner");
+    expect(!doc.in_clip(3, 4), "in_clip outside left");
+    expect(!doc.in_clip(10, 4), "in_clip outside right");
+    expect(!doc.in_clip(4, 3), "in_clip outside top");
+    expect(!doc.in_clip(4, 10), "in_clip outside bottom");
+
+    // 3. Drawing tools obey clipping
+    // Fill the whole map with a fill_rect of size [0, 0, 20, 20]
+    // Because clip is [4, 4, 6, 6], only cells inside [4, 4, 6, 6] should be painted!
+    doc.fill_rect({0, 0, 20, 20}, TileMode::Stamp, 1, 1);
+
+    for (int y = 0; y < 20; ++y) {
+        for (int x = 0; x < 20; ++x) {
+            const bool inside = (x >= 4 && x < 10 && y >= 4 && y < 10);
+            const MapCell& c = doc.get_cell(x, y);
+            if (inside) {
+                expect(!c.is_empty() && c.atlas_x == 1 && c.atlas_y == 1, "inside clip must be filled");
+            } else {
+                expect(c.is_empty(), "outside clip must remain empty");
+            }
+        }
+    }
+
+    // 4. Paint cell across the boundary
+    // Paint at (3, 3) with brush size 3 (covers [3..5, 3..5])
+    // Only (4,4), (4,5), (5,4), (5,5) are inside clip!
+    doc.paint_cell(3, 3, TileMode::Stamp, 2, 2, 3);
+    expect(doc.get_cell(3, 3).is_empty(), "outside clip (3,3) remains empty after paint");
+    expect(doc.get_cell(4, 4).atlas_x == 2 && doc.get_cell(4, 4).atlas_y == 2, "inside clip (4,4) was painted");
+
+    // 5. Erase cell across the boundary
+    // Erase at (3, 3) with brush size 3
+    doc.erase_cell(3, 3, 3);
+    expect(doc.get_cell(3, 3).is_empty(), "(3,3) still empty");
+    expect(doc.get_cell(4, 4).is_empty(), "inside clip (4,4) was erased");
+    expect(!doc.get_cell(6, 6).is_empty(), "untouched cell (6,6) still painted");
+
+    // 6. Flood fill is contained by clip
+    // Fill inside clip from (6, 6)
+    doc.flood_fill(6, 6, TileMode::Stamp, 3, 3);
+    expect(doc.get_cell(6, 6).atlas_x == 3 && doc.get_cell(6, 6).atlas_y == 3, "flood fill inside clip");
+    expect(doc.get_cell(0, 0).is_empty(), "flood fill did not escape clip");
+
+    // 7. Erase rect (selection clear)
+    doc.erase_rect(clip);
+    for (int y = clip.y; y < clip.bottom(); ++y) {
+        for (int x = clip.x; x < clip.right(); ++x) {
+            expect(doc.get_cell(x, y).is_empty(), "erase_rect cleared cell in selection");
+        }
+    }
+
+    // 8. Copy and paste
+    doc.set_clip_rect(nullptr);
+    doc.paint_cell(2, 2, TileMode::Stamp, 5, 5, 2); // 2x2 stamp at (2,2)
+    Clipboard clip_data = doc.copy_rect({2, 2, 2, 2});
+    expect(clip_data.w == 2 && clip_data.h == 2, "copy_rect size");
+    expect(clip_data.cells.size() == 4, "copy_rect 4 cells copied");
+
+    // Paste at (12, 12)
+    doc.paste_clipboard(12, 12, clip_data);
+    expect(!doc.get_cell(12, 12).is_empty() && doc.get_cell(12, 12).atlas_x == 5, "pasted cell at (12,12)");
+    expect(!doc.get_cell(13, 13).is_empty() && doc.get_cell(13, 13).atlas_x == 5, "pasted cell at (13,13)");
+
+    // 9. Move selected tiles and single-step undo
+    // Place a 3x3 block at (5, 5)
+    doc.paint_cell(5, 5, TileMode::Stamp, 7, 7, 3);
+    expect(!doc.get_cell(5, 5).is_empty() && doc.get_cell(5, 5).atlas_x == 7, "tile at (5,5) before move");
+    expect(doc.get_cell(10, 10).is_empty(), "target (10,10) empty before move");
+
+    // Move selection from (5,5) to (10,10)
+    Rect sel{5, 5, 3, 3};
+    doc.begin_stroke("Move Selection");
+    Clipboard moving_tiles = doc.copy_rect(sel);
+    doc.erase_rect(sel);
+    sel.x = 10;
+    sel.y = 10;
+    doc.paste_clipboard(sel.x, sel.y, moving_tiles);
+    doc.end_stroke();
+
+    // Verify origin is cleared and destination has the moved tiles
+    expect(doc.get_cell(5, 5).is_empty(), "origin (5,5) cleared after move");
+    expect(!doc.get_cell(10, 10).is_empty() && doc.get_cell(10, 10).atlas_x == 7, "destination (10,10) has moved tile");
+    expect(!doc.get_cell(12, 12).is_empty() && doc.get_cell(12, 12).atlas_x == 7, "destination (12,12) has moved tile");
+
+    // Single-step undo must restore origin and clear destination
+    expect(doc.undo(), "undo move selection");
+    expect(!doc.get_cell(5, 5).is_empty() && doc.get_cell(5, 5).atlas_x == 7, "origin (5,5) restored after undo");
+    expect(doc.get_cell(10, 10).is_empty(), "destination (10,10) cleared after undo");
+
+    // 10. Non-destructive moving lifecycle with cancel_stroke (Escape / cancellation)
+    doc.paint_cell(3, 3, TileMode::Stamp, 2, 2, 2); // 2x2 stamp at (3,3)
+    doc.paint_cell(15, 15, TileMode::Stamp, 9, 9, 2); // 2x2 stamp at (15,15)
+    expect(doc.get_cell(3, 3).atlas_x == 2, "initial tile at (3,3)");
+    expect(doc.get_cell(15, 15).atlas_x == 9, "underneath tile at (15,15) intact");
+
+    // Lift selection at (3,3)
+    doc.begin_stroke("Move Selection");
+    Clipboard lifted = doc.copy_rect({3, 3, 2, 2});
+    doc.erase_rect({3, 3, 2, 2});
+    expect(doc.get_cell(3, 3).is_empty(), "origin (3,3) erased on lift");
+
+    // Move floating selection over (15,15) - underlying tiles must NOT be erased while moving!
+    expect(doc.get_cell(15, 15).atlas_x == 9, "underneath tile at (15,15) NOT erased during move");
+    expect(doc.get_cell(16, 16).atlas_x == 9, "underneath tile at (16,16) NOT erased during move");
+
+    // Cancel move (e.g. user presses Esc or cancels)
+    doc.cancel_stroke();
+    expect(doc.get_cell(3, 3).atlas_x == 2, "origin (3,3) restored after cancel_stroke");
+    expect(doc.get_cell(15, 15).atlas_x == 9, "underneath tile at (15,15) still intact after cancel");
+
+    // 11. Move selection over existing tiles and apply on deselect (Ctrl+D / right-click)
+    doc.paint_cell(2, 2, TileMode::Stamp, 4, 4, 2); // 2x2 stamp at (2,2)
+    doc.paint_cell(8, 8, TileMode::Stamp, 6, 6, 2); // 2x2 stamp at (8,8)
+    expect(doc.get_cell(2, 2).atlas_x == 4, "origin tile at (2,2)");
+    expect(doc.get_cell(8, 8).atlas_x == 6, "target tile at (8,8)");
+
+    // Lift and move
+    doc.begin_stroke("Move Selection");
+    Clipboard lifted2 = doc.copy_rect({2, 2, 2, 2});
+    doc.erase_rect({2, 2, 2, 2});
+    // Target still untouched while hovering/moving:
+    expect(doc.get_cell(8, 8).atlas_x == 6, "target (8,8) untouched while selection floats");
+
+    // Apply on deselect:
+    doc.paste_clipboard(8, 8, lifted2);
+    doc.end_stroke();
+
+    // Now target has the moved tiles:
+    expect(doc.get_cell(2, 2).is_empty(), "origin (2,2) is empty after apply");
+    expect(doc.get_cell(8, 8).atlas_x == 4, "target (8,8) now has moved tile");
+
+    // Single-step undo restores origin AND destination's original tiles!
+    expect(doc.undo(), "undo apply moved selection");
+    expect(doc.get_cell(2, 2).atlas_x == 4, "origin (2,2) restored after undo");
+    expect(doc.get_cell(8, 8).atlas_x == 6, "target (8,8) restored to previous tile after undo");
+
+    // Redo re-applies the move:
+    expect(doc.redo(), "redo apply moved selection");
+    expect(doc.get_cell(2, 2).is_empty(), "origin (2,2) empty after redo");
+    expect(doc.get_cell(8, 8).atlas_x == 4, "target (8,8) has moved tile after redo");
+}
+
 } // namespace
 
 int main() {
@@ -627,6 +785,7 @@ int main() {
     test_terrain_import();
     test_line_and_outline_rect();
     test_c_header_variants();
+    test_selection_and_clipping();
 
     if (g_fails) {
         std::cerr << g_fails << " test(s) failed\n";

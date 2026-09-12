@@ -107,10 +107,27 @@ public:
     // Collision generation
     CollisionGrid build_collision_grid() const;
 
+    // Selection clipping
+    void set_clip_rect(const Rect* r) {
+        if (r) {
+            clip_rect_ = *r;
+            has_clip_ = true;
+        } else {
+            has_clip_ = false;
+        }
+    }
+    const Rect* get_clip_rect() const { return has_clip_ ? &clip_rect_ : nullptr; }
+    bool in_clip(int x, int y) const {
+        if (!has_clip_) return true;
+        return (x >= clip_rect_.x && y >= clip_rect_.y &&
+                x < clip_rect_.right() && y < clip_rect_.bottom());
+    }
+
     // Undo / Redo
     void begin_stroke(const std::string& action_name);
     void record_change(int x, int y);
     void end_stroke();
+    void cancel_stroke();
 
     bool can_undo() const { return !undo_stack_.empty(); }
     bool can_redo() const { return !redo_stack_.empty(); }
@@ -124,6 +141,9 @@ public:
 private:
     std::vector<MapCell> cells_;
     static const MapCell kEmptyCell;
+
+    bool has_clip_ = false;
+    Rect clip_rect_{0, 0, 0, 0};
 
     bool stroke_in_progress_ = false;
     UndoAction current_action_;
