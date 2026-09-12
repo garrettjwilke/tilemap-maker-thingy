@@ -88,11 +88,17 @@ public:
     void outline_rect(const Rect& rect, TileMode mode, int stamp_col = -1, int stamp_row = -1, int brush_size = 1);
     void erase_rect(const Rect& rect);
     void erase_outline_rect(const Rect& rect, int brush_size = 1);
+    void fill_ellipse(const Rect& rect, TileMode mode, int stamp_col = -1, int stamp_row = -1);
+    void outline_ellipse(const Rect& rect, TileMode mode, int stamp_col = -1, int stamp_row = -1, int brush_size = 1);
+    void erase_ellipse(const Rect& rect);
+    void erase_outline_ellipse(const Rect& rect, int brush_size = 1);
     void flood_fill(int x, int y, TileMode mode, int stamp_col = -1, int stamp_row = -1);
 
     // Clipboard & Selection
     Clipboard copy_rect(const Rect& rect) const;
+    Clipboard copy_ellipse(const Rect& rect) const;
     void cut_rect(const Rect& rect, Clipboard& clip);
+    void cut_ellipse(const Rect& rect, Clipboard& clip);
     void paste_clipboard(int x, int y, const Clipboard& clip);
 
     // Autotile solver
@@ -108,19 +114,38 @@ public:
     CollisionGrid build_collision_grid() const;
 
     // Selection clipping
-    void set_clip_rect(const Rect* r) {
+    enum class ClipShape { Rect, Ellipse };
+    void set_clip_rect(const Rect* r, ClipShape shape = ClipShape::Rect) {
         if (r) {
             clip_rect_ = *r;
+            clip_shape_ = shape;
             has_clip_ = true;
         } else {
             has_clip_ = false;
+            clip_shape_ = ClipShape::Rect;
         }
     }
     const Rect* get_clip_rect() const { return has_clip_ ? &clip_rect_ : nullptr; }
+    ClipShape get_clip_shape() const { return clip_shape_; }
     bool in_clip(int x, int y) const {
         if (!has_clip_) return true;
-        return (x >= clip_rect_.x && y >= clip_rect_.y &&
-                x < clip_rect_.right() && y < clip_rect_.bottom());
+        if (clip_shape_ == ClipShape::Rect) {
+            return (x >= clip_rect_.x && y >= clip_rect_.y &&
+                    x < clip_rect_.right() && y < clip_rect_.bottom());
+        } else {
+            if (x < clip_rect_.x || y < clip_rect_.y || x >= clip_rect_.right() || y >= clip_rect_.bottom()) {
+                return false;
+            }
+            const float cx = static_cast<float>(clip_rect_.x) + static_cast<float>(clip_rect_.w) * 0.5f;
+            const float cy = static_cast<float>(clip_rect_.y) + static_cast<float>(clip_rect_.h) * 0.5f;
+            const float rx = std::max(0.5f, static_cast<float>(clip_rect_.w) * 0.5f);
+            const float ry = std::max(0.5f, static_cast<float>(clip_rect_.h) * 0.5f);
+            const float px = static_cast<float>(x) + 0.5f;
+            const float py = static_cast<float>(y) + 0.5f;
+            const float dx = (px - cx) / rx;
+            const float dy = (py - cy) / ry;
+            return (dx * dx + dy * dy) <= 1.0f;
+        }
     }
 
     // Undo / Redo
@@ -143,6 +168,7 @@ private:
     static const MapCell kEmptyCell;
 
     bool has_clip_ = false;
+    ClipShape clip_shape_ = ClipShape::Rect;
     Rect clip_rect_{0, 0, 0, 0};
 
     bool stroke_in_progress_ = false;

@@ -818,6 +818,139 @@ void test_brush_size_and_tools() {
     expect(loaded.brush_size == 4, "loaded brush_size is 4");
 }
 
+void test_circle_mode_and_clipping() {
+    using namespace tmm;
+    TilemapDoc doc;
+    doc.reset(20, 20, 16);
+
+    // 1. fill_ellipse test
+    // In a 9x9 box at (1, 1), center is (5.5, 5.5), radius is (4.5, 4.5).
+    doc.fill_ellipse({1, 1, 9, 9}, TileMode::Stamp, 3, 3);
+    expect(doc.get_cell(5, 5).atlas_x == 3, "center of filled circle is painted");
+    expect(doc.get_cell(5, 1).atlas_x == 3, "top tangent of circle is painted");
+    expect(doc.get_cell(5, 9).atlas_x == 3, "bottom tangent of circle is painted");
+    expect(doc.get_cell(1, 5).atlas_x == 3, "left tangent of circle is painted");
+    expect(doc.get_cell(9, 5).atlas_x == 3, "right tangent of circle is painted");
+    expect(doc.get_cell(1, 1).is_empty(), "corner (1, 1) outside circle is empty");
+    expect(doc.get_cell(9, 1).is_empty(), "corner (9, 1) outside circle is empty");
+    expect(doc.get_cell(1, 9).is_empty(), "corner (1, 9) outside circle is empty");
+    expect(doc.get_cell(9, 9).is_empty(), "corner (9, 9) outside circle is empty");
+
+    // 2. outline_ellipse test
+    doc.reset(20, 20, 16);
+    doc.outline_ellipse({1, 1, 9, 9}, TileMode::Stamp, 4, 4, 1);
+    expect(doc.get_cell(5, 5).is_empty(), "center of outline circle is empty");
+    expect(doc.get_cell(5, 1).atlas_x == 4, "top border of outline circle is painted");
+    expect(doc.get_cell(1, 1).is_empty(), "corner outside outline circle is empty");
+
+    // Outline ellipse with thickness = 2
+    doc.reset(20, 20, 16);
+    doc.outline_ellipse({1, 1, 9, 9}, TileMode::Stamp, 4, 4, 2);
+    expect(doc.get_cell(5, 5).is_empty(), "center of thick outline circle is empty");
+    expect(doc.get_cell(5, 1).atlas_x == 4, "outer edge (5, 1) is painted");
+    expect(doc.get_cell(5, 2).atlas_x == 4, "inner edge (5, 2) is painted with thickness 2");
+
+    // 3. erase_ellipse and erase_outline_ellipse
+    doc.fill_rect({0, 0, 20, 20}, TileMode::Stamp, 7, 7);
+    expect(doc.get_cell(5, 5).atlas_x == 7, "map filled with tiles");
+    doc.erase_ellipse({1, 1, 9, 9});
+    expect(doc.get_cell(5, 5).is_empty(), "circle center erased");
+    expect(doc.get_cell(1, 1).atlas_x == 7, "corner (1,1) untouched by erase_ellipse");
+
+    doc.fill_rect({0, 0, 20, 20}, TileMode::Stamp, 7, 7);
+    doc.erase_outline_ellipse({1, 1, 9, 9}, 1);
+    expect(doc.get_cell(5, 5).atlas_x == 7, "circle center untouched by erase_outline_ellipse");
+    expect(doc.get_cell(5, 1).is_empty(), "circle perimeter erased by erase_outline_ellipse");
+    expect(doc.get_cell(1, 1).atlas_x == 7, "corner (1,1) untouched by erase_outline_ellipse");
+
+    // 4. copy_ellipse and cut_ellipse
+    doc.fill_rect({0, 0, 20, 20}, TileMode::Stamp, 8, 8);
+    Clipboard clip = doc.copy_ellipse({1, 1, 9, 9});
+    expect(!clip.is_empty(), "copy_ellipse returns non-empty clipboard");
+    for (const auto& item : clip.cells) {
+        const int map_x = 1 + item.first.x;
+        const int map_y = 1 + item.first.y;
+        expect(doc.in_bounds(map_x, map_y), "copied cell in bounds");
+        expect(!(item.first.x == 0 && item.first.y == 0), "corner cell not copied in copy_ellipse");
+    }
+
+    Clipboard cut_clip;
+    doc.cut_ellipse({1, 1, 9, 9}, cut_clip);
+    expect(doc.get_cell(5, 5).is_empty(), "cut_ellipse erased circle interior");
+    expect(doc.get_cell(1, 1).atlas_x == 8, "cut_ellipse preserved corner (1, 1)");
+
+    // 5. Selection with ClipShape::Ellipse
+    doc.reset(20, 20, 16);
+    Rect sel_rect{1, 1, 9, 9};
+    doc.set_clip_rect(&sel_rect, TilemapDoc::ClipShape::Ellipse);
+    expect(doc.in_clip(5, 5), "center is inside circular clip");
+    expect(!doc.in_clip(1, 1), "corner is outside circular clip");
+    expect(!doc.in_clip(0, 0), "outside bounding box is outside clip");
+
+    // Paint entire rectangle bounding box - only cells inside ellipse should be modified
+    for (int y = 1; y <= 9; ++y) {
+        for (int x = 1; x <= 9; ++x) {
+            doc.paint_cell(x, y, TileMode::Stamp, 5, 5);
+        }
+    }
+    expect(doc.get_cell(5, 5).atlas_x == 5, "in-clip cell painted");
+    expect(doc.get_cell(1, 1).is_empty(), "out-of-clip corner remains empty");
+
+    // Flood fill with circular clip
+    doc.reset(20, 20, 16);
+    doc.set_clip_rect(&sel_rect, TilemapDoc::ClipShape::Ellipse);
+    doc.flood_fill(5, 5, TileMode::Stamp, 6, 6);
+    expect(doc.get_cell(5, 5).atlas_x == 6, "center flooded");
+    expect(doc.get_cell(1, 1).is_empty(), "corner untouched by flood fill due to circular clip");
+    expect(doc.get_cell(0, 0).is_empty(), "outside untouched by flood fill");
+
+    doc.set_clip_rect(nullptr);
+
+    // 6. Shift lock aspect ratio
+    auto test_drag_rect = [](int start_x, int start_y, int curr_x, int curr_y, bool square, int doc_w, int doc_h) -> Rect {
+        start_x = std::clamp(start_x, 0, doc_w - 1);
+        start_y = std::clamp(start_y, 0, doc_h - 1);
+        const int dx = curr_x - start_x;
+        const int dy = curr_y - start_y;
+        const int sx = (dx >= 0) ? 1 : -1;
+        const int sy = (dy >= 0) ? 1 : -1;
+        if (square) {
+            const int max_side_x = (sx >= 0) ? (doc_w - 1 - start_x) : start_x;
+            const int max_side_y = (sy >= 0) ? (doc_h - 1 - start_y) : start_y;
+            int side = std::max(std::abs(dx), std::abs(dy));
+            side = std::min(side, std::min(max_side_x, max_side_y));
+            const int target_x = start_x + sx * side;
+            const int target_y = start_y + sy * side;
+            const int rx = std::min(start_x, target_x);
+            const int ry = std::min(start_y, target_y);
+            return {rx, ry, side + 1, side + 1};
+        } else {
+            const int cx_clamped = std::clamp(curr_x, 0, doc_w - 1);
+            const int cy_clamped = std::clamp(curr_y, 0, doc_h - 1);
+            const int rx = std::min(start_x, cx_clamped);
+            const int ry = std::min(start_y, cy_clamped);
+            const int rx2 = std::max(start_x, cx_clamped);
+            const int ry2 = std::max(start_y, cy_clamped);
+            return {rx, ry, rx2 - rx + 1, ry2 - ry + 1};
+        }
+    };
+
+    Rect non_square = test_drag_rect(2, 2, 8, 4, false, 20, 20);
+    expect(non_square.w == 7 && non_square.h == 3, "non-shift drag has free aspect ratio");
+
+    Rect square_se = test_drag_rect(2, 2, 8, 4, true, 20, 20);
+    expect(square_se.w == square_se.h && square_se.w == 7, "shift drag enforces 1:1 aspect ratio SE");
+    expect(square_se.x == 2 && square_se.y == 2, "square origin at top-left");
+
+    Rect square_nw = test_drag_rect(8, 8, 3, 5, true, 20, 20);
+    expect(square_nw.w == square_nw.h && square_nw.w == 6, "shift drag enforces 1:1 aspect ratio NW");
+    expect(square_nw.x == 3 && square_nw.y == 3, "square origin at top-left for NW drag");
+
+    Rect square_clamped = test_drag_rect(18, 18, 25, 22, true, 20, 20);
+    expect(square_clamped.w == square_clamped.h, "shift drag clamped to bounds maintains 1:1");
+    expect(square_clamped.right() <= 20 && square_clamped.bottom() <= 20, "shift drag stays within bounds");
+}
+
 } // namespace
 
 int main() {
@@ -834,6 +967,7 @@ int main() {
     test_c_header_variants();
     test_selection_and_clipping();
     test_brush_size_and_tools();
+    test_circle_mode_and_clipping();
 
     if (g_fails) {
         std::cerr << g_fails << " test(s) failed\n";

@@ -44,6 +44,7 @@ struct EditorState {
     int stamp_row = 2;
     int brush_size = 1;
     bool rect_fill = true;
+    bool rect_circle = false;
 
     // Viewport
     float zoom = 2.0f;
@@ -69,6 +70,8 @@ struct EditorState {
     // Selection
     bool has_selection = false;
     Rect selection = {0, 0, 0, 0};
+    bool select_circle = false;
+    bool selection_is_circle = false;
     bool selection_lifted = false;
     Rect selection_origin = {0, 0, 0, 0};
     Clipboard floating_clip;
@@ -528,6 +531,57 @@ static void execute_export() {
     g_ed.show_export_modal = false;
 }
 
+static bool is_cell_in_ellipse(int x, int y, const Rect& rect) {
+    if (rect.w <= 0 || rect.h <= 0) return false;
+    const float cx = static_cast<float>(rect.x) + static_cast<float>(rect.w) * 0.5f;
+    const float cy = static_cast<float>(rect.y) + static_cast<float>(rect.h) * 0.5f;
+    const float rx = std::max(0.5f, static_cast<float>(rect.w) * 0.5f);
+    const float ry = std::max(0.5f, static_cast<float>(rect.h) * 0.5f);
+    const float px = static_cast<float>(x) + 0.5f;
+    const float py = static_cast<float>(y) + 0.5f;
+    const float dx = (px - cx) / rx;
+    const float dy = (py - cy) / ry;
+    return (dx * dx + dy * dy) <= 1.0f;
+}
+
+static bool is_cell_in_outline_ellipse(int x, int y, const Rect& rect, int brush_size) {
+    if (!is_cell_in_ellipse(x, y, rect)) return false;
+    brush_size = std::max(brush_size, 1);
+    const int inner_w = rect.w - 2 * brush_size;
+    const int inner_h = rect.h - 2 * brush_size;
+    if (inner_w <= 0 || inner_h <= 0) return true;
+    const Rect inner_rect{rect.x + brush_size, rect.y + brush_size, inner_w, inner_h};
+    return !is_cell_in_ellipse(x, y, inner_rect);
+}
+
+static Rect compute_drag_rect(int start_x, int start_y, int curr_x, int curr_y, bool square) {
+    start_x = std::clamp(start_x, 0, g_ed.doc.width - 1);
+    start_y = std::clamp(start_y, 0, g_ed.doc.height - 1);
+    const int dx = curr_x - start_x;
+    const int dy = curr_y - start_y;
+    const int sx = (dx >= 0) ? 1 : -1;
+    const int sy = (dy >= 0) ? 1 : -1;
+    if (square) {
+        const int max_side_x = (sx >= 0) ? (g_ed.doc.width - 1 - start_x) : start_x;
+        const int max_side_y = (sy >= 0) ? (g_ed.doc.height - 1 - start_y) : start_y;
+        int side = std::max(std::abs(dx), std::abs(dy));
+        side = std::min(side, std::min(max_side_x, max_side_y));
+        const int target_x = start_x + sx * side;
+        const int target_y = start_y + sy * side;
+        const int rx = std::min(start_x, target_x);
+        const int ry = std::min(start_y, target_y);
+        return {rx, ry, side + 1, side + 1};
+    } else {
+        const int cx_clamped = std::clamp(curr_x, 0, g_ed.doc.width - 1);
+        const int cy_clamped = std::clamp(curr_y, 0, g_ed.doc.height - 1);
+        const int rx = std::min(start_x, cx_clamped);
+        const int ry = std::min(start_y, cy_clamped);
+        const int rx2 = std::max(start_x, cx_clamped);
+        const int ry2 = std::max(start_y, cy_clamped);
+        return {rx, ry, rx2 - rx + 1, ry2 - ry + 1};
+    }
+}
+
 static void apply_moved_selection() {
     if (!g_ed.has_selection) return;
     if (g_ed.selection_lifted) {
@@ -544,6 +598,7 @@ static void cancel_paste() {
     if (!g_ed.paste_mode) return;
     g_ed.paste_mode = false;
     g_ed.has_selection = false;
+    g_ed.selection_is_circle = false;
     g_ed.doc.set_clip_rect(nullptr);
     g_ed.is_moving_paste = false;
     g_ed.status_msg = "Paste cancelled.";
@@ -554,8 +609,9 @@ static void commit_paste() {
     g_ed.doc.paste_clipboard(g_ed.paste_pos.x, g_ed.paste_pos.y, g_ed.clipboard);
     g_ed.paste_mode = false;
     g_ed.has_selection = true;
+    g_ed.selection_is_circle = false;
     g_ed.selection = {g_ed.paste_pos.x, g_ed.paste_pos.y, g_ed.clipboard.w, g_ed.clipboard.h};
-    g_ed.doc.set_clip_rect(&g_ed.selection);
+    g_ed.doc.set_clip_rect(&g_ed.selection, TilemapDoc::ClipShape::Rect);
     g_ed.is_moving_paste = false;
     g_ed.status_msg = "Pasted clipboard contents.";
 }
@@ -567,6 +623,7 @@ static void deselect() {
     if (g_ed.has_selection) {
         apply_moved_selection();
         g_ed.has_selection = false;
+        g_ed.selection_is_circle = false;
         g_ed.selection_lifted = false;
         g_ed.is_moving_selection = false;
         g_ed.floating_clip.clear();
@@ -587,12 +644,76 @@ static void cancel_or_deselect() {
         g_ed.floating_clip.clear();
         g_ed.is_moving_selection = false;
         g_ed.has_selection = false;
+        g_ed.selection_is_circle = false;
         g_ed.doc.set_clip_rect(nullptr);
         g_ed.status_msg = "Move cancelled.";
     } else if (g_ed.has_selection) {
         g_ed.has_selection = false;
+        g_ed.selection_is_circle = false;
         g_ed.doc.set_clip_rect(nullptr);
         g_ed.status_msg = "Deselected.";
+    }
+}
+
+static void cut_selection() {
+    if (!g_ed.has_selection || g_ed.paste_mode) return;
+    if (g_ed.selection_lifted) {
+        g_ed.clipboard = g_ed.floating_clip;
+        g_ed.floating_clip.clear();
+        g_ed.doc.end_stroke();
+        g_ed.selection_lifted = false;
+        g_ed.has_selection = false;
+        g_ed.selection_is_circle = false;
+        g_ed.doc.set_clip_rect(nullptr);
+    } else if (g_ed.selection_is_circle) {
+        g_ed.doc.cut_ellipse(g_ed.selection, g_ed.clipboard);
+        g_ed.has_selection = false;
+        g_ed.selection_is_circle = false;
+        g_ed.doc.set_clip_rect(nullptr);
+    } else {
+        g_ed.doc.cut_rect(g_ed.selection, g_ed.clipboard);
+        g_ed.has_selection = false;
+        g_ed.selection_is_circle = false;
+        g_ed.doc.set_clip_rect(nullptr);
+    }
+    g_ed.status_msg = "Cut selection.";
+}
+
+static void copy_selection() {
+    if (!g_ed.has_selection || g_ed.paste_mode) return;
+    if (g_ed.selection_lifted) {
+        g_ed.clipboard = g_ed.floating_clip;
+    } else if (g_ed.selection_is_circle) {
+        g_ed.clipboard = g_ed.doc.copy_ellipse(g_ed.selection);
+    } else {
+        g_ed.clipboard = g_ed.doc.copy_rect(g_ed.selection);
+    }
+    g_ed.status_msg = "Copied selection.";
+}
+
+static void delete_selection() {
+    if (!g_ed.has_selection || g_ed.paste_mode) return;
+    if (g_ed.selection_lifted) {
+        g_ed.doc.end_stroke();
+        g_ed.selection_lifted = false;
+        g_ed.floating_clip.clear();
+        g_ed.is_moving_selection = false;
+        g_ed.has_selection = false;
+        g_ed.selection_is_circle = false;
+        g_ed.doc.set_clip_rect(nullptr);
+        g_ed.status_msg = "Deleted selected tiles.";
+    } else if (g_ed.selection_is_circle) {
+        g_ed.doc.erase_ellipse(g_ed.selection);
+        g_ed.has_selection = false;
+        g_ed.selection_is_circle = false;
+        g_ed.doc.set_clip_rect(nullptr);
+        g_ed.status_msg = "Cleared selection.";
+    } else {
+        g_ed.doc.erase_rect(g_ed.selection);
+        g_ed.has_selection = false;
+        g_ed.selection_is_circle = false;
+        g_ed.doc.set_clip_rect(nullptr);
+        g_ed.status_msg = "Cleared selection.";
     }
 }
 
@@ -624,8 +745,9 @@ static void start_paste() {
     g_ed.paste_pos = {px, py};
     g_ed.selection = {px, py, g_ed.clipboard.w, g_ed.clipboard.h};
     g_ed.has_selection = true;
+    g_ed.selection_is_circle = false;
     g_ed.selection_lifted = false;
-    g_ed.doc.set_clip_rect(&g_ed.selection);
+    g_ed.doc.set_clip_rect(&g_ed.selection, TilemapDoc::ClipShape::Rect);
     g_ed.is_moving_paste = false;
     g_ed.status_msg = "Pasting: Drag or use Arrows to move. Enter or click outside to commit, Esc to cancel.";
 }
@@ -636,6 +758,11 @@ struct ScopedStyleColor {
         if (condition) {
             ImGui::PushStyleColor(idx, col);
             count = 1;
+            if (idx == ImGuiCol_Button) {
+                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, col);
+                ImGui::PushStyleColor(ImGuiCol_ButtonActive, col);
+                count = 3;
+            }
         }
     }
     ~ScopedStyleColor() {
@@ -731,7 +858,7 @@ static void draw_tool_selection_row() {
             const ImVec4 btn_col(ct.color.r / 255.0f, ct.color.g / 255.0f, ct.color.b / 255.0f, is_active ? 1.0f : 0.65f);
 
             ImGui::PushStyleColor(ImGuiCol_Button, btn_col);
-            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(btn_col.x, btn_col.y, btn_col.z, 0.85f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, is_active ? btn_col : ImVec4(btn_col.x, btn_col.y, btn_col.z, 0.85f));
             ImGui::PushStyleColor(ImGuiCol_ButtonActive, btn_col);
             if (is_active) {
                 ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 2.0f);
@@ -782,10 +909,9 @@ static void draw_tool_selection_row() {
     auto tool_button = [](const char* label, Tool t, const char* shortcut, const char* tooltip) {
         const bool is_active = (g_ed.tool == t);
         const ImVec4 active_col(0.20f, 0.50f, 0.88f, 1.0f);
-        const ImVec4 hover_col(0.28f, 0.58f, 0.95f, 1.0f);
         if (is_active) {
             ImGui::PushStyleColor(ImGuiCol_Button, active_col);
-            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, hover_col);
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, active_col);
             ImGui::PushStyleColor(ImGuiCol_ButtonActive, active_col);
             ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 1.5f);
             ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(1.0f, 1.0f, 1.0f, 0.9f));
@@ -862,27 +988,20 @@ static void draw_tool_options_row() {
         return;
     }
 
-    // Helper for rendering brush thickness slider and quick preset buttons
+    // Helper for rendering brush thickness preset buttons
     auto draw_thickness_controls = [](const char* label_prefix, const char* id_suffix) {
         ImGui::Text("Thickness:");
-        ImGui::SameLine();
-        ImGui::SetNextItemWidth(90);
-        char slider_id[64];
-        std::snprintf(slider_id, sizeof(slider_id), "##%sThickness%s", label_prefix, id_suffix);
-        if (ImGui::SliderInt(slider_id, &g_ed.brush_size, 1, 4, "%d tiles")) {
-            persist_settings();
-        }
-        if (ImGui::IsItemHovered()) {
-            ImGui::SetTooltip("Brush thickness: 1-4 tiles");
-        }
         ImGui::SameLine();
         for (int s = 1; s <= 4; ++s) {
             ScopedStyleColor bcol(ImGuiCol_Button, ImVec4(0.24f, 0.48f, 0.80f, 1.0f), g_ed.brush_size == s);
             char btn_lbl[32];
             std::snprintf(btn_lbl, sizeof(btn_lbl), "%d##%sSz%d%s", s, label_prefix, s, id_suffix);
-            if (ImGui::Button(btn_lbl, ImVec2(22, 0))) {
+            if (ImGui::Button(btn_lbl, ImVec2(24, 0))) {
                 g_ed.brush_size = s;
                 persist_settings();
+            }
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("Brush thickness: %d tile%s", s, s > 1 ? "s" : "");
             }
             ImGui::SameLine();
         }
@@ -979,6 +1098,10 @@ static void draw_tool_options_row() {
         case Tool::Rect: {
             ImGui::TextColored(ImVec4(0.4f, 0.75f, 1.0f, 1.0f), "RECTANGLE OPTIONS:");
             ImGui::SameLine();
+            ImGui::Checkbox("Circle Mode##RectCircle", &g_ed.rect_circle);
+            ImGui::SameLine();
+            ImGui::TextDisabled("|");
+            ImGui::SameLine();
             {
                 ScopedStyleColor col(ImGuiCol_Button, ImVec4(0.24f, 0.48f, 0.80f, 1.0f), g_ed.rect_fill);
                 if (ImGui::Button("Fill##RectOptFill")) {
@@ -999,7 +1122,7 @@ static void draw_tool_options_row() {
             ImGui::TextDisabled("|");
             ImGui::SameLine();
             draw_source_controls("RectOpt");
-            draw_hint("Left-drag: Draw Rect  |  Right-drag: Erase Rect");
+            draw_hint("Left-drag: Draw  |  Right-drag: Erase  |  Hold Shift: 1:1");
             break;
         }
         case Tool::Fill: {
@@ -1012,10 +1135,14 @@ static void draw_tool_options_row() {
         case Tool::Select: {
             ImGui::TextColored(ImVec4(0.4f, 0.75f, 1.0f, 1.0f), "SELECTION OPTIONS:");
             ImGui::SameLine();
+            ImGui::Checkbox("Circle Mode##SelectCircle", &g_ed.select_circle);
+            ImGui::SameLine();
+            ImGui::TextDisabled("|");
+            ImGui::SameLine();
             if (g_ed.paste_mode) {
                 ImGui::Text("Pasting: %d×%d at (%d, %d)", g_ed.clipboard.w, g_ed.clipboard.h, g_ed.paste_pos.x, g_ed.paste_pos.y);
             } else if (g_ed.has_selection) {
-                ImGui::Text("Selected: %d×%d at (%d, %d)", g_ed.selection.w, g_ed.selection.h, g_ed.selection.x, g_ed.selection.y);
+                ImGui::Text("%s: %d×%d at (%d, %d)", g_ed.selection_is_circle ? "Circle Selected" : "Selected", g_ed.selection.w, g_ed.selection.h, g_ed.selection.x, g_ed.selection.y);
             } else {
                 ImGui::TextDisabled("No active selection");
             }
@@ -1026,28 +1153,11 @@ static void draw_tool_options_row() {
             const bool can_cut_copy = g_ed.has_selection && !g_ed.paste_mode;
             if (!can_cut_copy) ImGui::BeginDisabled(true);
             if (ImGui::Button("Cut##SelCut")) {
-                if (g_ed.selection_lifted) {
-                    g_ed.clipboard = g_ed.floating_clip;
-                    g_ed.floating_clip.clear();
-                    g_ed.doc.end_stroke();
-                    g_ed.selection_lifted = false;
-                    g_ed.has_selection = false;
-                    g_ed.doc.set_clip_rect(nullptr);
-                } else {
-                    g_ed.doc.cut_rect(g_ed.selection, g_ed.clipboard);
-                    g_ed.has_selection = false;
-                    g_ed.doc.set_clip_rect(nullptr);
-                }
-                g_ed.status_msg = "Cut selection.";
+                cut_selection();
             }
             ImGui::SameLine();
             if (ImGui::Button("Copy##SelCopy")) {
-                if (g_ed.selection_lifted) {
-                    g_ed.clipboard = g_ed.floating_clip;
-                } else {
-                    g_ed.clipboard = g_ed.doc.copy_rect(g_ed.selection);
-                }
-                g_ed.status_msg = "Copied selection.";
+                copy_selection();
             }
             if (!can_cut_copy) ImGui::EndDisabled();
             ImGui::SameLine();
@@ -1062,17 +1172,7 @@ static void draw_tool_options_row() {
 
             if (!can_cut_copy) ImGui::BeginDisabled(true);
             if (ImGui::Button("Delete##SelDel")) {
-                if (g_ed.selection_lifted) {
-                    g_ed.doc.end_stroke();
-                    g_ed.selection_lifted = false;
-                    g_ed.floating_clip.clear();
-                    g_ed.has_selection = false;
-                    g_ed.doc.set_clip_rect(nullptr);
-                    g_ed.status_msg = "Deleted selected tiles.";
-                } else {
-                    g_ed.doc.erase_rect(g_ed.selection);
-                    g_ed.status_msg = "Cleared selection.";
-                }
+                delete_selection();
             }
             if (!can_cut_copy) ImGui::EndDisabled();
             ImGui::SameLine();
@@ -1085,7 +1185,7 @@ static void draw_tool_options_row() {
             if (!can_desel) ImGui::EndDisabled();
             ImGui::SameLine();
 
-            draw_hint("Drag to select or move selection");
+            draw_hint("Drag: Select  |  Hold Shift: 1:1  |  Drag inside to move");
             break;
         }
         case Tool::Eyedropper: {
@@ -1597,8 +1697,10 @@ static void draw_canvas_viewport_content() {
         (cell_x >= g_ed.paste_pos.x && cell_x < g_ed.paste_pos.x + g_ed.clipboard.w &&
          cell_y >= g_ed.paste_pos.y && cell_y < g_ed.paste_pos.y + g_ed.clipboard.h);
     const bool in_sel_rect = g_ed.has_selection && !g_ed.paste_mode &&
-        (cell_x >= g_ed.selection.x && cell_x < g_ed.selection.right() &&
-         cell_y >= g_ed.selection.y && cell_y < g_ed.selection.bottom());
+        (g_ed.selection_is_circle ?
+            is_cell_in_ellipse(cell_x, cell_y, g_ed.selection) :
+            (cell_x >= g_ed.selection.x && cell_x < g_ed.selection.right() &&
+             cell_y >= g_ed.selection.y && cell_y < g_ed.selection.bottom()));
 
     if (is_hovered && !space_down) {
         if (in_paste_rect || (in_sel_rect && g_ed.tool == Tool::Select)) {
@@ -1641,9 +1743,15 @@ static void draw_canvas_viewport_content() {
             if (in_sel_rect) {
                 if (!g_ed.selection_lifted) {
                     g_ed.selection_origin = g_ed.selection;
-                    g_ed.floating_clip = g_ed.doc.copy_rect(g_ed.selection);
-                    g_ed.doc.begin_stroke("Move Selection");
-                    g_ed.doc.erase_rect(g_ed.selection);
+                    if (g_ed.selection_is_circle) {
+                        g_ed.floating_clip = g_ed.doc.copy_ellipse(g_ed.selection);
+                        g_ed.doc.begin_stroke("Move Selection");
+                        g_ed.doc.erase_ellipse(g_ed.selection);
+                    } else {
+                        g_ed.floating_clip = g_ed.doc.copy_rect(g_ed.selection);
+                        g_ed.doc.begin_stroke("Move Selection");
+                        g_ed.doc.erase_rect(g_ed.selection);
+                    }
                     g_ed.selection_lifted = true;
                 }
                 g_ed.is_moving_selection = true;
@@ -1708,11 +1816,11 @@ static void draw_canvas_viewport_content() {
                 const int max_y = std::max(0, g_ed.doc.height - g_ed.selection.h);
                 g_ed.selection.x = std::clamp(g_ed.selection_drag_origin.x + dx, 0, max_x);
                 g_ed.selection.y = std::clamp(g_ed.selection_drag_origin.y + dy, 0, max_y);
-                g_ed.doc.set_clip_rect(&g_ed.selection);
+                g_ed.doc.set_clip_rect(&g_ed.selection, g_ed.selection_is_circle ? TilemapDoc::ClipShape::Ellipse : TilemapDoc::ClipShape::Rect);
             } else {
                 g_ed.is_moving_selection = false;
                 g_ed.is_drawing = false;
-                g_ed.doc.set_clip_rect(&g_ed.selection);
+                g_ed.doc.set_clip_rect(&g_ed.selection, g_ed.selection_is_circle ? TilemapDoc::ClipShape::Ellipse : TilemapDoc::ClipShape::Rect);
                 g_ed.status_msg = "Moved selection (floating). Press Ctrl+D or right-click to apply.";
             }
         } else if (ImGui::IsMouseDown(ImGuiMouseButton_Left) || ImGui::IsMouseDown(ImGuiMouseButton_Right)) {
@@ -1827,40 +1935,68 @@ static void draw_canvas_viewport_content() {
                 draw_list->AddLine(ImVec2(start_center_x, start_center_y), ImVec2(curr_center_x, curr_center_y),
                                    g_ed.right_click_erasing ? IM_COL32(255, 100, 100, 220) : IM_COL32(120, 255, 160, 220), 1.5f);
             } else if (g_ed.tool == Tool::Rect || g_ed.tool == Tool::Select) {
-                const int rx = std::clamp(std::min(g_ed.drag_start.x, cell_x), 0, g_ed.doc.width - 1);
-                const int ry = std::clamp(std::min(g_ed.drag_start.y, cell_y), 0, g_ed.doc.height - 1);
-                const int rx2 = std::clamp(std::max(g_ed.drag_start.x, cell_x), 0, g_ed.doc.width - 1);
-                const int ry2 = std::clamp(std::max(g_ed.drag_start.y, cell_y), 0, g_ed.doc.height - 1);
-                const int rw = rx2 - rx + 1;
-                const int rh = ry2 - ry + 1;
-                const float rpx0 = cell_to_screen_x(rx);
-                const float rpy0 = cell_to_screen_y(ry);
-                const float rpx1 = cell_to_screen_x(rx + rw);
-                const float rpy1 = cell_to_screen_y(ry + rh);
+                const Rect r = compute_drag_rect(g_ed.drag_start.x, g_ed.drag_start.y, cell_x, cell_y, io.KeyShift);
+                const float rpx0 = cell_to_screen_x(r.x);
+                const float rpy0 = cell_to_screen_y(r.y);
+                const float rpx1 = cell_to_screen_x(r.x + r.w);
+                const float rpy1 = cell_to_screen_y(r.y + r.h);
 
                 const ImU32 fill_col = g_ed.right_click_erasing ? IM_COL32(220, 50, 50, 70) : IM_COL32(60, 160, 240, 70);
                 const ImU32 border_col = g_ed.right_click_erasing ? IM_COL32(255, 80, 80, 240) : IM_COL32(80, 180, 255, 240);
 
-                if (g_ed.tool == Tool::Select || g_ed.rect_fill) {
-                    draw_list->AddRectFilled(ImVec2(rpx0, rpy0), ImVec2(rpx1, rpy1), fill_col);
-                    draw_list->AddRect(ImVec2(rpx0, rpy0), ImVec2(rpx1, rpy1), border_col, 0.0f, 0, 2.0f);
-                } else {
-                    const int bs = std::min(g_ed.brush_size, std::min(rw, rh));
-                    const float inner_x0 = cell_to_screen_x(rx + bs);
-                    const float inner_y0 = cell_to_screen_y(ry + bs);
-                    const float inner_x1 = cell_to_screen_x(rx + rw - bs);
-                    const float inner_y1 = cell_to_screen_y(ry + rh - bs);
+                const bool is_circle = (g_ed.tool == Tool::Rect) ? g_ed.rect_circle : g_ed.select_circle;
 
-                    if (bs * 2 >= rw || bs * 2 >= rh) {
-                        draw_list->AddRectFilled(ImVec2(rpx0, rpy0), ImVec2(rpx1, rpy1), fill_col);
+                if (is_circle) {
+                    const ImVec2 center((rpx0 + rpx1) * 0.5f, (rpy0 + rpy1) * 0.5f);
+                    const ImVec2 radius((rpx1 - rpx0) * 0.5f, (rpy1 - rpy0) * 0.5f);
+
+                    if (g_ed.tool == Tool::Select || g_ed.rect_fill) {
+                        draw_list->AddEllipseFilled(center, radius, fill_col);
+                        draw_list->AddEllipse(center, radius, border_col, 0.0f, 0, 2.0f);
                     } else {
-                        draw_list->AddRectFilled(ImVec2(rpx0, rpy0), ImVec2(rpx1, inner_y0), fill_col); // Top
-                        draw_list->AddRectFilled(ImVec2(rpx0, inner_y1), ImVec2(rpx1, rpy1), fill_col); // Bottom
-                        draw_list->AddRectFilled(ImVec2(rpx0, inner_y0), ImVec2(inner_x0, inner_y1), fill_col); // Left
-                        draw_list->AddRectFilled(ImVec2(inner_x1, inner_y0), ImVec2(rpx1, inner_y1), fill_col); // Right
-                        draw_list->AddRect(ImVec2(inner_x0, inner_y0), ImVec2(inner_x1, inner_y1), border_col, 0.0f, 0, 1.0f);
+                        const int bs = std::min(g_ed.brush_size, std::min(r.w, r.h));
+                        if (bs * 2 >= r.w || bs * 2 >= r.h) {
+                            draw_list->AddEllipseFilled(center, radius, fill_col);
+                        } else {
+                            for (int y = r.y; y < r.bottom(); ++y) {
+                                for (int x = r.x; x < r.right(); ++x) {
+                                    if (is_cell_in_outline_ellipse(x, y, r, bs)) {
+                                        const float cx0 = cell_to_screen_x(x);
+                                        const float cy0 = cell_to_screen_y(y);
+                                        const float cx1 = cell_to_screen_x(x + 1);
+                                        const float cy1 = cell_to_screen_y(y + 1);
+                                        draw_list->AddRectFilled(ImVec2(cx0, cy0), ImVec2(cx1, cy1), fill_col);
+                                    }
+                                }
+                            }
+                            const ImVec2 inner_radius(std::max(0.0f, radius.x - static_cast<float>(bs) * tile_px),
+                                                      std::max(0.0f, radius.y - static_cast<float>(bs) * tile_px));
+                            draw_list->AddEllipse(center, inner_radius, border_col, 0.0f, 0, 1.0f);
+                        }
+                        draw_list->AddEllipse(center, radius, border_col, 0.0f, 0, 2.0f);
                     }
-                    draw_list->AddRect(ImVec2(rpx0, rpy0), ImVec2(rpx1, rpy1), border_col, 0.0f, 0, 2.0f);
+                } else {
+                    if (g_ed.tool == Tool::Select || g_ed.rect_fill) {
+                        draw_list->AddRectFilled(ImVec2(rpx0, rpy0), ImVec2(rpx1, rpy1), fill_col);
+                        draw_list->AddRect(ImVec2(rpx0, rpy0), ImVec2(rpx1, rpy1), border_col, 0.0f, 0, 2.0f);
+                    } else {
+                        const int bs = std::min(g_ed.brush_size, std::min(r.w, r.h));
+                        const float inner_x0 = cell_to_screen_x(r.x + bs);
+                        const float inner_y0 = cell_to_screen_y(r.y + bs);
+                        const float inner_x1 = cell_to_screen_x(r.x + r.w - bs);
+                        const float inner_y1 = cell_to_screen_y(r.y + r.h - bs);
+
+                        if (bs * 2 >= r.w || bs * 2 >= r.h) {
+                            draw_list->AddRectFilled(ImVec2(rpx0, rpy0), ImVec2(rpx1, rpy1), fill_col);
+                        } else {
+                            draw_list->AddRectFilled(ImVec2(rpx0, rpy0), ImVec2(rpx1, inner_y0), fill_col); // Top
+                            draw_list->AddRectFilled(ImVec2(rpx0, inner_y1), ImVec2(rpx1, rpy1), fill_col); // Bottom
+                            draw_list->AddRectFilled(ImVec2(rpx0, inner_y0), ImVec2(inner_x0, inner_y1), fill_col); // Left
+                            draw_list->AddRectFilled(ImVec2(inner_x1, inner_y0), ImVec2(rpx1, inner_y1), fill_col); // Right
+                            draw_list->AddRect(ImVec2(inner_x0, inner_y0), ImVec2(inner_x1, inner_y1), border_col, 0.0f, 0, 1.0f);
+                        }
+                        draw_list->AddRect(ImVec2(rpx0, rpy0), ImVec2(rpx1, rpy1), border_col, 0.0f, 0, 2.0f);
+                    }
                 }
             }
         } else {
@@ -1876,33 +2012,44 @@ static void draw_canvas_viewport_content() {
                                        g_ed.paint_mode, g_ed.stamp_col, g_ed.stamp_row, g_ed.brush_size);
                 }
             } else if (g_ed.tool == Tool::Rect) {
-                const int rx = std::min(g_ed.drag_start.x, cell_x);
-                const int ry = std::min(g_ed.drag_start.y, cell_y);
-                const int rw = std::abs(cell_x - g_ed.drag_start.x) + 1;
-                const int rh = std::abs(cell_y - g_ed.drag_start.y) + 1;
-                if (g_ed.rect_fill) {
-                    if (g_ed.right_click_erasing) {
-                        g_ed.doc.erase_rect({rx, ry, rw, rh});
+                const Rect r = compute_drag_rect(g_ed.drag_start.x, g_ed.drag_start.y, cell_x, cell_y, io.KeyShift);
+                if (g_ed.rect_circle) {
+                    if (g_ed.rect_fill) {
+                        if (g_ed.right_click_erasing) {
+                            g_ed.doc.erase_ellipse(r);
+                        } else {
+                            g_ed.doc.fill_ellipse(r, g_ed.paint_mode, g_ed.stamp_col, g_ed.stamp_row);
+                        }
                     } else {
-                        g_ed.doc.fill_rect({rx, ry, rw, rh}, g_ed.paint_mode, g_ed.stamp_col, g_ed.stamp_row);
+                        if (g_ed.right_click_erasing) {
+                            g_ed.doc.erase_outline_ellipse(r, g_ed.brush_size);
+                        } else {
+                            g_ed.doc.outline_ellipse(r, g_ed.paint_mode, g_ed.stamp_col, g_ed.stamp_row, g_ed.brush_size);
+                        }
                     }
                 } else {
-                    if (g_ed.right_click_erasing) {
-                        g_ed.doc.erase_outline_rect({rx, ry, rw, rh}, g_ed.brush_size);
+                    if (g_ed.rect_fill) {
+                        if (g_ed.right_click_erasing) {
+                            g_ed.doc.erase_rect(r);
+                        } else {
+                            g_ed.doc.fill_rect(r, g_ed.paint_mode, g_ed.stamp_col, g_ed.stamp_row);
+                        }
                     } else {
-                        g_ed.doc.outline_rect({rx, ry, rw, rh}, g_ed.paint_mode, g_ed.stamp_col, g_ed.stamp_row, g_ed.brush_size);
+                        if (g_ed.right_click_erasing) {
+                            g_ed.doc.erase_outline_rect(r, g_ed.brush_size);
+                        } else {
+                            g_ed.doc.outline_rect(r, g_ed.paint_mode, g_ed.stamp_col, g_ed.stamp_row, g_ed.brush_size);
+                        }
                     }
                 }
             } else if (g_ed.tool == Tool::Select) {
-                const int rx = std::clamp(std::min(g_ed.drag_start.x, cell_x), 0, g_ed.doc.width - 1);
-                const int ry = std::clamp(std::min(g_ed.drag_start.y, cell_y), 0, g_ed.doc.height - 1);
-                const int rx2 = std::clamp(std::max(g_ed.drag_start.x, cell_x), 0, g_ed.doc.width - 1);
-                const int ry2 = std::clamp(std::max(g_ed.drag_start.y, cell_y), 0, g_ed.doc.height - 1);
-                g_ed.selection = {rx, ry, rx2 - rx + 1, ry2 - ry + 1};
+                const Rect r = compute_drag_rect(g_ed.drag_start.x, g_ed.drag_start.y, cell_x, cell_y, io.KeyShift);
+                g_ed.selection = r;
                 g_ed.has_selection = true;
                 g_ed.selection_lifted = false;
+                g_ed.selection_is_circle = g_ed.select_circle;
                 g_ed.floating_clip.clear();
-                g_ed.doc.set_clip_rect(&g_ed.selection);
+                g_ed.doc.set_clip_rect(&g_ed.selection, g_ed.selection_is_circle ? TilemapDoc::ClipShape::Ellipse : TilemapDoc::ClipShape::Rect);
             }
             g_ed.is_drawing = false;
         }
@@ -1915,11 +2062,20 @@ static void draw_canvas_viewport_content() {
         const float spx1 = cell_to_screen_x(g_ed.selection.x + g_ed.selection.w);
         const float spy1 = cell_to_screen_y(g_ed.selection.y + g_ed.selection.h);
         const ImU32 box_col = g_ed.paste_mode ? IM_COL32(80, 220, 255, 255) : (g_ed.selection_lifted ? IM_COL32(255, 210, 50, 255) : IM_COL32(255, 230, 80, 255));
-        draw_list->AddRect(ImVec2(spx0, spy0), ImVec2(spx1, spy1), box_col, 0.0f, 0, 2.0f);
-        if (g_ed.paste_mode) {
-            draw_list->AddRectFilled(ImVec2(spx0, spy0), ImVec2(spx1, spy1), IM_COL32(60, 180, 255, 40));
-        } else if (g_ed.selection_lifted) {
-            draw_list->AddRect(ImVec2(spx0 - 1, spy0 - 1), ImVec2(spx1 + 1, spy1 + 1), IM_COL32(0, 0, 0, 160), 0.0f, 0, 1.0f);
+        if (g_ed.selection_is_circle && !g_ed.paste_mode) {
+            const ImVec2 scenter((spx0 + spx1) * 0.5f, (spy0 + spy1) * 0.5f);
+            const ImVec2 sradius((spx1 - spx0) * 0.5f, (spy1 - spy0) * 0.5f);
+            draw_list->AddEllipse(scenter, sradius, box_col, 0.0f, 0, 2.0f);
+            if (g_ed.selection_lifted) {
+                draw_list->AddEllipse(scenter, ImVec2(sradius.x + 1.0f, sradius.y + 1.0f), IM_COL32(0, 0, 0, 160), 0.0f, 0, 1.0f);
+            }
+        } else {
+            draw_list->AddRect(ImVec2(spx0, spy0), ImVec2(spx1, spy1), box_col, 0.0f, 0, 2.0f);
+            if (g_ed.paste_mode) {
+                draw_list->AddRectFilled(ImVec2(spx0, spy0), ImVec2(spx1, spy1), IM_COL32(60, 180, 255, 40));
+            } else if (g_ed.selection_lifted) {
+                draw_list->AddRect(ImVec2(spx0 - 1, spy0 - 1), ImVec2(spx1 + 1, spy1 + 1), IM_COL32(0, 0, 0, 160), 0.0f, 0, 1.0f);
+            }
         }
     }
 
@@ -2299,7 +2455,7 @@ int run_editor() {
         ImGui::NewFrame();
 
         // Synchronize clip rect with active selection
-        g_ed.doc.set_clip_rect(g_ed.has_selection ? &g_ed.selection : nullptr);
+        g_ed.doc.set_clip_rect(g_ed.has_selection ? &g_ed.selection : nullptr, g_ed.selection_is_circle ? TilemapDoc::ClipShape::Ellipse : TilemapDoc::ClipShape::Rect);
 
         // Global shortcuts (processed after NewFrame so input events are current)
         if (!io.WantTextInput) {
@@ -2344,27 +2500,10 @@ int run_editor() {
                 execute_export();
             }
             if (cmd && ImGui::IsKeyPressed(ImGuiKey_C) && g_ed.has_selection && !g_ed.paste_mode) {
-                if (g_ed.selection_lifted) {
-                    g_ed.clipboard = g_ed.floating_clip;
-                } else {
-                    g_ed.clipboard = g_ed.doc.copy_rect(g_ed.selection);
-                }
-                g_ed.status_msg = "Copied selection.";
+                copy_selection();
             }
             if (cmd && ImGui::IsKeyPressed(ImGuiKey_X) && g_ed.has_selection && !g_ed.paste_mode) {
-                if (g_ed.selection_lifted) {
-                    g_ed.clipboard = g_ed.floating_clip;
-                    g_ed.floating_clip.clear();
-                    g_ed.doc.end_stroke();
-                    g_ed.selection_lifted = false;
-                    g_ed.has_selection = false;
-                    g_ed.doc.set_clip_rect(nullptr);
-                } else {
-                    g_ed.doc.cut_rect(g_ed.selection, g_ed.clipboard);
-                    g_ed.has_selection = false;
-                    g_ed.doc.set_clip_rect(nullptr);
-                }
-                g_ed.status_msg = "Cut selection.";
+                cut_selection();
             }
             if (cmd && ImGui::IsKeyPressed(ImGuiKey_V) && !g_ed.clipboard.is_empty()) {
                 start_paste();
@@ -2390,7 +2529,7 @@ int run_editor() {
                         g_ed.paste_pos.y = std::clamp(g_ed.paste_pos.y + dy, 0, max_y);
                         g_ed.selection.x = g_ed.paste_pos.x;
                         g_ed.selection.y = g_ed.paste_pos.y;
-                        g_ed.doc.set_clip_rect(&g_ed.selection);
+                        g_ed.doc.set_clip_rect(&g_ed.selection, TilemapDoc::ClipShape::Rect);
                     }
                 }
             } else {
@@ -2401,18 +2540,7 @@ int run_editor() {
                     apply_moved_selection();
                 }
                 if ((ImGui::IsKeyPressed(ImGuiKey_Delete) || ImGui::IsKeyPressed(ImGuiKey_Backspace)) && g_ed.has_selection) {
-                    if (g_ed.selection_lifted) {
-                        g_ed.doc.end_stroke();
-                        g_ed.selection_lifted = false;
-                        g_ed.floating_clip.clear();
-                        g_ed.is_moving_selection = false;
-                        g_ed.has_selection = false;
-                        g_ed.doc.set_clip_rect(nullptr);
-                        g_ed.status_msg = "Deleted selected tiles.";
-                    } else {
-                        g_ed.doc.erase_rect(g_ed.selection);
-                        g_ed.status_msg = "Cleared selection.";
-                    }
+                    delete_selection();
                 }
                 if (g_ed.has_selection && !g_ed.is_moving_selection) {
                     int dx = 0;
@@ -2429,14 +2557,20 @@ int run_editor() {
                         if (target_x != g_ed.selection.x || target_y != g_ed.selection.y) {
                             if (!g_ed.selection_lifted) {
                                 g_ed.selection_origin = g_ed.selection;
-                                g_ed.floating_clip = g_ed.doc.copy_rect(g_ed.selection);
-                                g_ed.doc.begin_stroke("Move Selection");
-                                g_ed.doc.erase_rect(g_ed.selection);
+                                if (g_ed.selection_is_circle) {
+                                    g_ed.floating_clip = g_ed.doc.copy_ellipse(g_ed.selection);
+                                    g_ed.doc.begin_stroke("Move Selection");
+                                    g_ed.doc.erase_ellipse(g_ed.selection);
+                                } else {
+                                    g_ed.floating_clip = g_ed.doc.copy_rect(g_ed.selection);
+                                    g_ed.doc.begin_stroke("Move Selection");
+                                    g_ed.doc.erase_rect(g_ed.selection);
+                                }
                                 g_ed.selection_lifted = true;
                             }
                             g_ed.selection.x = target_x;
                             g_ed.selection.y = target_y;
-                            g_ed.doc.set_clip_rect(&g_ed.selection);
+                            g_ed.doc.set_clip_rect(&g_ed.selection, g_ed.selection_is_circle ? TilemapDoc::ClipShape::Ellipse : TilemapDoc::ClipShape::Rect);
                             g_ed.status_msg = "Moved selection (floating). Press Ctrl+D or right-click to apply.";
                         }
                     }
@@ -2498,43 +2632,16 @@ int run_editor() {
                 }
                 ImGui::Separator();
                 if (ImGui::MenuItem("Cut", "Ctrl+X", false, g_ed.has_selection && !g_ed.paste_mode)) {
-                    if (g_ed.selection_lifted) {
-                        g_ed.clipboard = g_ed.floating_clip;
-                        g_ed.floating_clip.clear();
-                        g_ed.doc.end_stroke();
-                        g_ed.selection_lifted = false;
-                        g_ed.has_selection = false;
-                        g_ed.doc.set_clip_rect(nullptr);
-                    } else {
-                        g_ed.doc.cut_rect(g_ed.selection, g_ed.clipboard);
-                        g_ed.has_selection = false;
-                        g_ed.doc.set_clip_rect(nullptr);
-                    }
-                    g_ed.status_msg = "Cut selection.";
+                    cut_selection();
                 }
                 if (ImGui::MenuItem("Copy", "Ctrl+C", false, g_ed.has_selection && !g_ed.paste_mode)) {
-                    if (g_ed.selection_lifted) {
-                        g_ed.clipboard = g_ed.floating_clip;
-                    } else {
-                        g_ed.clipboard = g_ed.doc.copy_rect(g_ed.selection);
-                    }
-                    g_ed.status_msg = "Copied selection.";
+                    copy_selection();
                 }
                 if (ImGui::MenuItem("Paste", "Ctrl+V", false, !g_ed.clipboard.is_empty())) {
                     start_paste();
                 }
                 if (ImGui::MenuItem("Clear Selection", "Del", false, g_ed.has_selection && !g_ed.paste_mode)) {
-                    if (g_ed.selection_lifted) {
-                        g_ed.doc.end_stroke();
-                        g_ed.selection_lifted = false;
-                        g_ed.floating_clip.clear();
-                        g_ed.has_selection = false;
-                        g_ed.doc.set_clip_rect(nullptr);
-                        g_ed.status_msg = "Deleted selected tiles.";
-                    } else {
-                        g_ed.doc.erase_rect(g_ed.selection);
-                        g_ed.status_msg = "Cleared selection.";
-                    }
+                    delete_selection();
                 }
                 if (ImGui::MenuItem("Deselect", "Ctrl+D", false, g_ed.has_selection || g_ed.paste_mode)) {
                     deselect();

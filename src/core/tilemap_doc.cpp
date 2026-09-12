@@ -438,6 +438,116 @@ void TilemapDoc::erase_rect(const Rect& rect) {
     }
 }
 
+static bool is_cell_in_ellipse(int x, int y, const Rect& rect) {
+    if (rect.w <= 0 || rect.h <= 0) return false;
+    const float cx = static_cast<float>(rect.x) + static_cast<float>(rect.w) * 0.5f;
+    const float cy = static_cast<float>(rect.y) + static_cast<float>(rect.h) * 0.5f;
+    const float rx = std::max(0.5f, static_cast<float>(rect.w) * 0.5f);
+    const float ry = std::max(0.5f, static_cast<float>(rect.h) * 0.5f);
+    const float px = static_cast<float>(x) + 0.5f;
+    const float py = static_cast<float>(y) + 0.5f;
+    const float dx = (px - cx) / rx;
+    const float dy = (py - cy) / ry;
+    return (dx * dx + dy * dy) <= 1.0f;
+}
+
+static bool is_cell_in_outline_ellipse(int x, int y, const Rect& rect, int brush_size) {
+    if (!is_cell_in_ellipse(x, y, rect)) return false;
+    brush_size = std::max(brush_size, 1);
+    const int inner_w = rect.w - 2 * brush_size;
+    const int inner_h = rect.h - 2 * brush_size;
+    if (inner_w <= 0 || inner_h <= 0) return true;
+    const Rect inner_rect{rect.x + brush_size, rect.y + brush_size, inner_w, inner_h};
+    return !is_cell_in_ellipse(x, y, inner_rect);
+}
+
+void TilemapDoc::fill_ellipse(const Rect& rect, TileMode mode, int stamp_col, int stamp_row) {
+    begin_stroke(mode == TileMode::Terrain ? "Paint Circle Terrain" : "Paint Circle Stamp");
+    for (int y = rect.y; y < rect.bottom(); ++y) {
+        for (int x = rect.x; x < rect.right(); ++x) {
+            if (!in_bounds(x, y)) continue;
+            if (!in_clip(x, y)) continue;
+            if (!is_cell_in_ellipse(x, y, rect)) continue;
+
+            record_cell_internal(x, y);
+            MapCell& c = cells_[static_cast<size_t>(y * width + x)];
+            c.mode = mode;
+            if (mode == TileMode::Terrain) {
+                c.roll = random_01();
+            } else if (mode == TileMode::Stamp) {
+                c.atlas_x = stamp_col;
+                c.atlas_y = stamp_row;
+            }
+        }
+    }
+    solve_all_autotiles();
+    end_stroke();
+}
+
+void TilemapDoc::outline_ellipse(const Rect& rect, TileMode mode, int stamp_col, int stamp_row, int brush_size) {
+    begin_stroke(mode == TileMode::Terrain ? "Outline Circle Terrain" : "Outline Circle Stamp");
+    brush_size = std::max(brush_size, 1);
+
+    for (int y = rect.y; y < rect.bottom(); ++y) {
+        for (int x = rect.x; x < rect.right(); ++x) {
+            if (!in_bounds(x, y)) continue;
+            if (!in_clip(x, y)) continue;
+            if (!is_cell_in_outline_ellipse(x, y, rect, brush_size)) continue;
+
+            record_cell_internal(x, y);
+            MapCell& c = cells_[static_cast<size_t>(y * width + x)];
+            c.mode = mode;
+            if (mode == TileMode::Terrain) {
+                c.roll = random_01();
+            } else if (mode == TileMode::Stamp) {
+                c.atlas_x = stamp_col;
+                c.atlas_y = stamp_row;
+            }
+        }
+    }
+    solve_all_autotiles();
+    end_stroke();
+    mark_dirty();
+}
+
+void TilemapDoc::erase_ellipse(const Rect& rect) {
+    const bool local_stroke = !stroke_in_progress_;
+    if (local_stroke) {
+        begin_stroke("Erase Circle");
+    }
+    for (int y = rect.y; y < rect.bottom(); ++y) {
+        for (int x = rect.x; x < rect.right(); ++x) {
+            if (!in_bounds(x, y)) continue;
+            if (!is_cell_in_ellipse(x, y, rect)) continue;
+            record_cell_internal(x, y);
+            cells_[static_cast<size_t>(y * width + x)] = MapCell{};
+        }
+    }
+    solve_all_autotiles();
+    if (local_stroke) {
+        end_stroke();
+    }
+}
+
+void TilemapDoc::erase_outline_ellipse(const Rect& rect, int brush_size) {
+    begin_stroke("Erase Outline Circle");
+    brush_size = std::max(brush_size, 1);
+
+    for (int y = rect.y; y < rect.bottom(); ++y) {
+        for (int x = rect.x; x < rect.right(); ++x) {
+            if (!in_bounds(x, y)) continue;
+            if (!in_clip(x, y)) continue;
+            if (!is_cell_in_outline_ellipse(x, y, rect, brush_size)) continue;
+
+            record_cell_internal(x, y);
+            cells_[static_cast<size_t>(y * width + x)] = MapCell{};
+        }
+    }
+    solve_all_autotiles();
+    end_stroke();
+    mark_dirty();
+}
+
 void TilemapDoc::flood_fill(int start_x, int start_y, TileMode mode, int stamp_col, int stamp_row) {
     if (!in_bounds(start_x, start_y)) return;
     if (!in_clip(start_x, start_y)) return;
@@ -512,9 +622,28 @@ Clipboard TilemapDoc::copy_rect(const Rect& rect) const {
     return clip;
 }
 
+Clipboard TilemapDoc::copy_ellipse(const Rect& rect) const {
+    Clipboard clip;
+    clip.w = rect.w;
+    clip.h = rect.h;
+    for (int y = rect.y; y < rect.bottom(); ++y) {
+        for (int x = rect.x; x < rect.right(); ++x) {
+            if (in_bounds(x, y) && is_cell_in_ellipse(x, y, rect)) {
+                clip.cells.push_back({{x - rect.x, y - rect.y}, get_cell(x, y)});
+            }
+        }
+    }
+    return clip;
+}
+
 void TilemapDoc::cut_rect(const Rect& rect, Clipboard& clip) {
     clip = copy_rect(rect);
     erase_rect(rect);
+}
+
+void TilemapDoc::cut_ellipse(const Rect& rect, Clipboard& clip) {
+    clip = copy_ellipse(rect);
+    erase_ellipse(rect);
 }
 
 void TilemapDoc::paste_clipboard(int x, int y, const Clipboard& clip) {
