@@ -414,14 +414,51 @@ static void save_map_dialog() {
 }
 
 static void execute_export() {
-    if (std::strlen(g_ed.export_folder) == 0) {
-        g_ed.status_msg = "Select an export directory first.";
+    const char* default_dir = (std::strlen(g_ed.export_folder) > 0)
+        ? g_ed.export_folder
+        : (!g_ed.settings.last_export_dir.empty() ? g_ed.settings.last_export_dir.c_str() : nullptr);
+
+    nfdu8filteritem_t filters[2] = {{"PNG Image", "png"}, {"All Files", "*"}};
+    nfdu8char_t* out_path = nullptr;
+    const std::string def_name = g_ed.doc.name.empty() ? "map.png" : (g_ed.doc.name + ".png");
+
+    nfdresult_t res = NFD_SaveDialogU8(&out_path, filters, 2, default_dir, def_name.c_str());
+    if (res != NFD_OKAY || !out_path) {
+        if (res == NFD_ERROR) {
+            g_ed.status_msg = "Export dialog error: " + std::string(NFD_GetError());
+        }
         return;
     }
-    const std::string dir = g_ed.export_folder;
-    const std::string prefix = dir + "/" + g_ed.doc.name;
 
+    std::string chosen_png = out_path;
+    NFD_FreePathU8(out_path);
+
+    if (chosen_png.size() < 4 || (chosen_png.substr(chosen_png.size() - 4) != ".png" && chosen_png.substr(chosen_png.size() - 4) != ".PNG")) {
+        chosen_png += ".png";
+    }
+
+    std::string dir;
+    std::string stem;
+    const size_t last_slash = chosen_png.find_last_of("/\\");
+    if (last_slash != std::string::npos) {
+        dir = chosen_png.substr(0, last_slash);
+        const std::string filename = chosen_png.substr(last_slash + 1);
+        stem = filename.substr(0, filename.size() - 4);
+    } else {
+        dir = ".";
+        stem = chosen_png.substr(0, chosen_png.size() - 4);
+    }
+
+    std::snprintf(g_ed.export_folder, sizeof(g_ed.export_folder), "%s", dir.c_str());
+    g_ed.settings.last_export_dir = dir;
+    persist_settings();
+    if (!stem.empty()) {
+        g_ed.doc.name = stem;
+    }
+
+    const std::string prefix = dir + "/" + stem;
     std::vector<std::string> saved_files;
+
     if (g_ed.export_png) {
         const std::string p = prefix + ".png";
         std::string err = export_composite_png(g_ed.doc, p);
@@ -429,7 +466,7 @@ static void execute_export() {
             g_ed.status_msg = "PNG export failed: " + err;
             return;
         }
-        saved_files.push_back(g_ed.doc.name + ".png");
+        saved_files.push_back(stem + ".png");
     }
     if (g_ed.export_col_json) {
         const std::string p = prefix + "_collisions.json";
@@ -438,7 +475,7 @@ static void execute_export() {
             g_ed.status_msg = "Collision JSON export failed: " + err;
             return;
         }
-        saved_files.push_back(g_ed.doc.name + "_collisions.json");
+        saved_files.push_back(stem + "_collisions.json");
     }
     if (g_ed.export_col_bin) {
         const CollisionGrid grid = g_ed.doc.build_collision_grid();
@@ -449,7 +486,7 @@ static void execute_export() {
                 g_ed.status_msg = "Collision BIN export failed: " + err;
                 return;
             }
-            saved_files.push_back(g_ed.doc.name + "_col.bin");
+            saved_files.push_back(stem + "_col.bin");
         }
     }
     if (g_ed.export_map_json) {
@@ -459,7 +496,7 @@ static void execute_export() {
             g_ed.status_msg = "Map JSON export failed: " + err;
             return;
         }
-        saved_files.push_back(g_ed.doc.name + ".json");
+        saved_files.push_back(stem + ".json");
     }
 
     std::string msg = "Export complete: ";
@@ -468,8 +505,6 @@ static void execute_export() {
         msg += saved_files[i];
     }
     g_ed.status_msg = msg;
-    g_ed.settings.last_export_dir = g_ed.export_folder;
-    persist_settings();
     g_ed.show_export_modal = false;
 }
 
@@ -1568,7 +1603,10 @@ static void draw_sidebar_content(SDL_Renderer* renderer) {
     ImGui::TextColored(sec_hdr_col, "EXPORT");
     if (ImGui::Button("Export Destination…", ImVec2(-1, 26))) {
         nfdu8char_t* out_dir = nullptr;
-        nfdresult_t res = NFD_PickFolderU8(&out_dir, nullptr);
+        const char* def_dir = (std::strlen(g_ed.export_folder) > 0)
+            ? g_ed.export_folder
+            : (!g_ed.settings.last_export_dir.empty() ? g_ed.settings.last_export_dir.c_str() : nullptr);
+        nfdresult_t res = NFD_PickFolderU8(&out_dir, def_dir);
         if (res == NFD_OKAY && out_dir) {
             std::snprintf(g_ed.export_folder, sizeof(g_ed.export_folder), "%s", out_dir);
             g_ed.settings.last_export_dir = out_dir;
@@ -1579,7 +1617,7 @@ static void draw_sidebar_content(SDL_Renderer* renderer) {
     if (std::strlen(g_ed.export_folder) > 0) {
         ImGui::TextWrapped("Folder: %s", g_ed.export_folder);
     } else {
-        ImGui::TextDisabled("No folder selected yet.");
+        ImGui::TextDisabled("No folder selected (prompts on Export).");
     }
 
     ImGui::Checkbox("Composite PNG", &g_ed.export_png);
