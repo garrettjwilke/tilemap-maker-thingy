@@ -5,16 +5,35 @@
 
 namespace tmm {
 
+int CollisionGrid::count_types_used() const {
+    bool seen[256] = {false};
+    int count = 0;
+    for (uint8_t t : data) {
+        if (t != 0 && !seen[t]) {
+            seen[t] = true;
+            count++;
+        }
+    }
+    return count;
+}
+
 std::string compress_mde_collisions(const std::vector<uint8_t>& data) {
     if (data.empty()) {
         return "";
     }
     std::string parts;
-    int last_val = -1;
+    int64_t last_val = -1;
     int count = 0;
     for (size_t i = 0; i < data.size(); ++i) {
-        const int val = (data[i] != 0) ? 0x0F : 0x00;
-        if (val != last_val) {
+        const uint8_t type_id = data[i];
+        uint32_t val = 0;
+        if (type_id == 1) {
+            val = 0x0F;
+        } else if (type_id > 1) {
+            val = static_cast<uint32_t>(((type_id - 1) * 0x20) | 0x0F);
+        }
+
+        if (static_cast<int64_t>(val) != last_val) {
             if (count == 1) {
                 parts += "!";
             } else if (count > 0) {
@@ -23,7 +42,7 @@ std::string compress_mde_collisions(const std::vector<uint8_t>& data) {
                 parts += buf;
             }
             count = 0;
-            last_val = val;
+            last_val = static_cast<int64_t>(val);
             char buf[16];
             std::snprintf(buf, sizeof(buf), "%08x", val);
             parts += buf;
@@ -58,11 +77,19 @@ std::vector<uint8_t> decompress_mde_collisions(const std::string& rle, int expec
         std::stringstream ss;
         ss << std::hex << hex_val;
         ss >> val;
-        uint8_t byte_val = (val != 0) ? 1 : 0;
+
+        uint8_t type_val = 0;
+        if (val == 0) {
+            type_val = 0;
+        } else if ((val & 0xE0) == 0) {
+            type_val = 1;
+        } else {
+            type_val = static_cast<uint8_t>(((val & 0xE0) / 0x20) + 1);
+        }
 
         // Check if followed by '!' or '<hex>+'
         if (i < rle.size() && rle[i] == '!') {
-            out.push_back(byte_val);
+            out.push_back(type_val);
             i++;
         } else {
             size_t plus_pos = rle.find('+', i);
@@ -74,10 +101,10 @@ std::vector<uint8_t> decompress_mde_collisions(const std::string& rle, int expec
                 css << std::hex << count_hex;
                 css >> count;
                 for (uint32_t c = 0; c < count; ++c) {
-                    out.push_back(byte_val);
+                    out.push_back(type_val);
                 }
             } else {
-                out.push_back(byte_val);
+                out.push_back(type_val);
             }
         }
     }

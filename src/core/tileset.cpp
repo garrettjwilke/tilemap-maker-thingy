@@ -214,6 +214,9 @@ bool Tileset::load_png_raw(const std::string& path) {
     cols = w_cols;
     rows = kBaseRows;
     png_path = path;
+    if (tile_collisions.size() != static_cast<size_t>(cols * rows)) {
+        init_tile_collisions(1);
+    }
 
     palette.clear();
     if (im.indexed && im.palettesize > 0) {

@@ -24,10 +24,19 @@
 namespace tmm {
 
 enum class Tool { Paint, Line, Erase, Rect, Fill, Select, Eyedropper };
+enum class EditorViewMode { Tilemap, TilesetCollision };
 
 struct EditorState {
     TilemapDoc doc;
     Settings settings;
+
+    EditorViewMode view_mode = EditorViewMode::Tilemap;
+    uint8_t active_collision_type = 1;
+    float col_view_zoom = 3.0f;
+    ImVec2 col_view_pan = ImVec2(40.0f, 40.0f);
+    bool col_view_panning = false;
+    Cell hovered_col_tile = {-1, -1};
+    Cell last_col_painted = {-1, -1};
 
     Tool tool = Tool::Paint;
     TileMode paint_mode = TileMode::Terrain;
@@ -432,13 +441,16 @@ static void execute_export() {
         saved_files.push_back(g_ed.doc.name + "_collisions.json");
     }
     if (g_ed.export_col_bin) {
-        const std::string p = prefix + "_col.bin";
-        std::string err = export_collision_bin(g_ed.doc, p);
-        if (!err.empty()) {
-            g_ed.status_msg = "Collision BIN export failed: " + err;
-            return;
+        const CollisionGrid grid = g_ed.doc.build_collision_grid();
+        if (grid.count_types_used() <= 1) {
+            const std::string p = prefix + "_col.bin";
+            std::string err = export_collision_bin(g_ed.doc, p);
+            if (!err.empty()) {
+                g_ed.status_msg = "Collision BIN export failed: " + err;
+                return;
+            }
+            saved_files.push_back(g_ed.doc.name + "_col.bin");
         }
-        saved_files.push_back(g_ed.doc.name + "_col.bin");
     }
     if (g_ed.export_map_json) {
         const std::string p = prefix + ".json";
@@ -479,6 +491,130 @@ struct ScopedStyleColor {
 };
 
 static void draw_top_toolbar_row() {
+    // Mode switcher buttons
+    {
+        ScopedStyleColor col(ImGuiCol_Button, ImVec4(0.24f, 0.48f, 0.80f, 1.0f), g_ed.view_mode == EditorViewMode::Tilemap);
+        if (ImGui::Button("Tilemap Editor")) {
+            g_ed.view_mode = EditorViewMode::Tilemap;
+        }
+    }
+    ImGui::SameLine();
+    {
+        ScopedStyleColor col(ImGuiCol_Button, ImVec4(0.24f, 0.48f, 0.80f, 1.0f), g_ed.view_mode == EditorViewMode::TilesetCollision);
+        if (ImGui::Button("Tileset Collision")) {
+            g_ed.view_mode = EditorViewMode::TilesetCollision;
+        }
+    }
+    ImGui::SameLine();
+    ImGui::TextDisabled("|");
+    ImGui::SameLine();
+
+    if (g_ed.view_mode == EditorViewMode::TilesetCollision) {
+        // Draw Collision Type Picker toolbar
+        {
+            ScopedStyleColor col(ImGuiCol_Button, ImVec4(0.45f, 0.48f, 0.52f, 1.0f), g_ed.active_collision_type == 0);
+            if (ImGui::Button("None (Clear)")) {
+                g_ed.active_collision_type = 0;
+            }
+        }
+        ImGui::SameLine();
+
+        for (const auto& ct : g_ed.doc.collision_types) {
+            const bool is_active = (g_ed.active_collision_type == ct.id);
+            const ImVec4 btn_col(ct.color.r / 255.0f, ct.color.g / 255.0f, ct.color.b / 255.0f, is_active ? 1.0f : 0.65f);
+
+            ImGui::PushStyleColor(ImGuiCol_Button, btn_col);
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(btn_col.x, btn_col.y, btn_col.z, 0.85f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonActive, btn_col);
+            if (is_active) {
+                ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 2.0f);
+                ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(1.0f, 1.0f, 1.0f, 1.0f));
+            }
+
+            const std::string btn_label = ct.name + "##ColType" + std::to_string(ct.id);
+            if (ImGui::Button(btn_label.c_str())) {
+                g_ed.active_collision_type = ct.id;
+            }
+
+            if (is_active) {
+                ImGui::PopStyleColor();
+                ImGui::PopStyleVar();
+            }
+            ImGui::PopStyleColor(3);
+            ImGui::SameLine();
+        }
+
+        if (g_ed.active_collision_type > 0) {
+            const CollisionType* ct = g_ed.doc.get_collision_type(g_ed.active_collision_type);
+            if (ct) {
+                float c_flt[3] = {ct->color.r / 255.0f, ct->color.g / 255.0f, ct->color.b / 255.0f};
+                ImGui::SetNextItemWidth(36);
+                if (ImGui::ColorEdit3("##ActiveColColor", c_flt, ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoLabel)) {
+                    g_ed.doc.set_collision_type_color(g_ed.active_collision_type,
+                        Rgb{static_cast<uint8_t>(c_flt[0] * 255.0f),
+                            static_cast<uint8_t>(c_flt[1] * 255.0f),
+                            static_cast<uint8_t>(c_flt[2] * 255.0f)});
+                }
+                if (ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip("Change color for %s", ct->name.c_str());
+                }
+                ImGui::SameLine();
+            }
+        }
+
+        if (ImGui::Button("+ Add Type")) {
+            g_ed.active_collision_type = g_ed.doc.add_collision_type();
+            g_ed.status_msg = "Added new collision type: Type " + std::to_string(g_ed.active_collision_type);
+        }
+        ImGui::SameLine();
+
+        const bool can_remove = (g_ed.doc.collision_types.size() > 1 && g_ed.active_collision_type > 0);
+        if (!can_remove) ImGui::BeginDisabled(true);
+        if (ImGui::Button("- Remove")) {
+            const uint8_t to_remove = g_ed.active_collision_type;
+            g_ed.doc.remove_collision_type(to_remove);
+            g_ed.active_collision_type = g_ed.doc.collision_types.front().id;
+            g_ed.status_msg = "Removed collision type " + std::to_string(to_remove);
+        }
+        if (!can_remove) ImGui::EndDisabled();
+
+        ImGui::SameLine();
+        ImGui::TextDisabled("|");
+        ImGui::SameLine();
+
+        if (ImGui::Button("Set All Type 1")) {
+            g_ed.doc.tileset.init_tile_collisions(1);
+            g_ed.doc.mark_dirty();
+            g_ed.status_msg = "Set all tiles to Type 1.";
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Clear All")) {
+            g_ed.doc.tileset.init_tile_collisions(0);
+            g_ed.doc.mark_dirty();
+            g_ed.status_msg = "Cleared collision on all tiles.";
+        }
+
+        ImGui::SameLine();
+        ImGui::TextDisabled("|");
+        ImGui::SameLine();
+
+        if (ImGui::Button("-##ColZoomOut")) {
+            g_ed.col_view_zoom = std::max(0.5f, g_ed.col_view_zoom / 1.25f);
+        }
+        ImGui::SameLine();
+        ImGui::Text("%.0f%%", g_ed.col_view_zoom * 100.0f);
+        ImGui::SameLine();
+        if (ImGui::Button("+##ColZoomIn")) {
+            g_ed.col_view_zoom = std::min(16.0f, g_ed.col_view_zoom * 1.25f);
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Fit View##ColFit")) {
+            g_ed.col_view_zoom = 3.0f;
+            g_ed.col_view_pan = ImVec2(40, 40);
+        }
+        return;
+    }
+
     auto tool_button = [](const char* label, Tool t, const char* shortcut) {
         ScopedStyleColor col(ImGuiCol_Button, ImVec4(0.24f, 0.48f, 0.80f, 1.0f), g_ed.tool == t);
         char title[64];
@@ -586,7 +722,221 @@ static void draw_top_toolbar_row() {
     }
 }
 
+static void draw_tileset_collision_viewport() {
+    const ImGuiIO& io = ImGui::GetIO();
+    ImDrawList* draw_list = ImGui::GetWindowDrawList();
+
+    const ImVec2 canvas_p0 = ImGui::GetCursorScreenPos();
+    const ImVec2 canvas_sz = ImGui::GetContentRegionAvail();
+    if (canvas_sz.x < 30.0f || canvas_sz.y < 30.0f) return;
+    const ImVec2 canvas_p1 = ImVec2(canvas_p0.x + canvas_sz.x, canvas_p0.y + canvas_sz.y);
+
+    draw_list->PushClipRect(canvas_p0, canvas_p1, true);
+
+    const ImU32 bg_col = g_ed.settings.dark ? IM_COL32(18, 20, 24, 255) : IM_COL32(220, 224, 230, 255);
+    draw_list->AddRectFilled(canvas_p0, canvas_p1, bg_col);
+
+    if (!g_ed.doc.tileset.is_valid() || !g_ed.tileset_texture) {
+        const char* msg = "No valid tileset loaded. Import a tileset to configure tile collisions.";
+        const ImVec2 txt_sz = ImGui::CalcTextSize(msg);
+        draw_list->AddText(ImVec2(canvas_p0.x + (canvas_sz.x - txt_sz.x) * 0.5f,
+                                  canvas_p0.y + (canvas_sz.y - txt_sz.y) * 0.5f),
+                           IM_COL32(160, 160, 160, 255), msg);
+        draw_list->PopClipRect();
+        return;
+    }
+
+    ImGui::InvisibleButton("TilesetCollisionCanvas", canvas_sz,
+                           ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight | ImGuiButtonFlags_MouseButtonMiddle);
+    const bool is_hovered = ImGui::IsItemHovered();
+
+    // Mouse wheel zoom
+    if (is_hovered && io.MouseWheel != 0.0f) {
+        const float old_zoom = g_ed.col_view_zoom;
+        const float factor = (io.MouseWheel > 0.0f) ? 1.25f : (1.0f / 1.25f);
+        const float new_zoom = std::clamp(old_zoom * factor, 0.5f, 16.0f);
+
+        const float mouse_rel_x = io.MousePos.x - (canvas_p0.x + g_ed.col_view_pan.x);
+        const float mouse_rel_y = io.MousePos.y - (canvas_p0.y + g_ed.col_view_pan.y);
+        g_ed.col_view_pan.x += mouse_rel_x * (1.0f - new_zoom / old_zoom);
+        g_ed.col_view_pan.y += mouse_rel_y * (1.0f - new_zoom / old_zoom);
+        g_ed.col_view_zoom = new_zoom;
+    }
+
+    // Panning with Middle Click or Space + Left Click
+    const bool space_down = ImGui::IsKeyDown(ImGuiKey_Space);
+    if (is_hovered && (ImGui::IsMouseClicked(ImGuiMouseButton_Middle) || (space_down && ImGui::IsMouseClicked(ImGuiMouseButton_Left)))) {
+        g_ed.col_view_panning = true;
+    }
+    if (g_ed.col_view_panning) {
+        if (ImGui::IsMouseDown(ImGuiMouseButton_Middle) || (space_down && ImGui::IsMouseDown(ImGuiMouseButton_Left))) {
+            g_ed.col_view_pan.x += io.MouseDelta.x;
+            g_ed.col_view_pan.y += io.MouseDelta.y;
+        } else {
+            g_ed.col_view_panning = false;
+        }
+    }
+
+    const int cols = g_ed.doc.tileset.cols;
+    const int rows = g_ed.doc.tileset.rows;
+    const int ts = g_ed.doc.tileset.tile_size;
+    const float tile_px = static_cast<float>(ts) * g_ed.col_view_zoom;
+    const float origin_x = std::floor(canvas_p0.x + g_ed.col_view_pan.x);
+    const float origin_y = std::floor(canvas_p0.y + g_ed.col_view_pan.y);
+
+    const float atlas_w = cols * tile_px;
+    const float atlas_h = rows * tile_px;
+
+    // Draw checkerboard behind tileset
+    const float chk_sz = 16.0f;
+    const ImU32 chk1 = g_ed.settings.dark ? IM_COL32(28, 30, 36, 255) : IM_COL32(235, 238, 242, 255);
+    const ImU32 chk2 = g_ed.settings.dark ? IM_COL32(36, 38, 46, 255) : IM_COL32(245, 248, 252, 255);
+    for (float y = 0; y < atlas_h; y += chk_sz) {
+        for (float x = 0; x < atlas_w; x += chk_sz) {
+            const int ix = static_cast<int>(x / chk_sz);
+            const int iy = static_cast<int>(y / chk_sz);
+            const ImU32 col = ((ix + iy) % 2 == 0) ? chk1 : chk2;
+            const float rx1 = std::min(origin_x + x + chk_sz, origin_x + atlas_w);
+            const float ry1 = std::min(origin_y + y + chk_sz, origin_y + atlas_h);
+            draw_list->AddRectFilled(ImVec2(origin_x + x, origin_y + y), ImVec2(rx1, ry1), col);
+        }
+    }
+
+    // Render tileset texture
+    const ImGuiPlatformIO& platform_io = ImGui::GetPlatformIO();
+    if (platform_io.DrawCallback_SetSamplerNearest != nullptr) {
+        draw_list->AddCallback(platform_io.DrawCallback_SetSamplerNearest, nullptr);
+    }
+    draw_list->AddImage(reinterpret_cast<ImTextureID>(g_ed.tileset_texture),
+                        ImVec2(origin_x, origin_y),
+                        ImVec2(origin_x + atlas_w, origin_y + atlas_h));
+    if (platform_io.DrawCallback_SetSamplerLinear != nullptr) {
+        draw_list->AddCallback(platform_io.DrawCallback_SetSamplerLinear, nullptr);
+    }
+
+    // Atlas outline
+    draw_list->AddRect(ImVec2(origin_x, origin_y), ImVec2(origin_x + atlas_w, origin_y + atlas_h),
+                       IM_COL32(70, 130, 240, 255), 0.0f, 0, 2.0f);
+
+    // Tile grid lines
+    const ImU32 grid_col = g_ed.settings.dark ? IM_COL32(255, 255, 255, 40) : IM_COL32(0, 0, 0, 40);
+    for (int c = 1; c < cols; ++c) {
+        const float gx = origin_x + c * tile_px;
+        draw_list->AddLine(ImVec2(gx, origin_y), ImVec2(gx, origin_y + atlas_h), grid_col);
+    }
+    for (int r = 1; r < rows; ++r) {
+        const float gy = origin_y + r * tile_px;
+        draw_list->AddLine(ImVec2(origin_x, gy), ImVec2(origin_x + atlas_w, gy), grid_col);
+    }
+
+    // Draw collision overlay for each tile
+    for (int r = 0; r < rows; ++r) {
+        for (int c = 0; c < cols; ++c) {
+            const uint8_t type_id = g_ed.doc.tileset.get_tile_collision(c, r);
+            const float tx0 = origin_x + c * tile_px;
+            const float ty0 = origin_y + r * tile_px;
+            const float tx1 = tx0 + tile_px;
+            const float ty1 = ty0 + tile_px;
+
+            if (type_id != 0) {
+                const CollisionType* ct = g_ed.doc.get_collision_type(type_id);
+                const Rgb col_rgb = ct ? ct->color : Rgb{235, 60, 50};
+                draw_list->AddRectFilled(ImVec2(tx0, ty0), ImVec2(tx1, ty1),
+                                         IM_COL32(col_rgb.r, col_rgb.g, col_rgb.b, 100));
+                draw_list->AddRect(ImVec2(tx0, ty0), ImVec2(tx1, ty1),
+                                   IM_COL32(col_rgb.r, col_rgb.g, col_rgb.b, 220), 0.0f, 0, 1.5f);
+
+                if (tile_px >= 22.0f) {
+                    char badge[16];
+                    std::snprintf(badge, sizeof(badge), "T%d", static_cast<int>(type_id));
+                    const ImVec2 bsz = ImGui::CalcTextSize(badge);
+                    draw_list->AddRectFilled(ImVec2(tx0 + 2, ty0 + 2),
+                                             ImVec2(tx0 + 4 + bsz.x, ty0 + 3 + bsz.y),
+                                             IM_COL32(0, 0, 0, 190), 2.0f);
+                    draw_list->AddText(ImVec2(tx0 + 3, ty0 + 2), IM_COL32(255, 255, 255, 255), badge);
+                }
+            }
+        }
+    }
+
+    // Mouse hovering and collision painting
+    g_ed.hovered_col_tile = {-1, -1};
+    if (is_hovered && !g_ed.col_view_panning) {
+        const float m_rel_x = (io.MousePos.x - origin_x) / tile_px;
+        const float m_rel_y = (io.MousePos.y - origin_y) / tile_px;
+        if (m_rel_x >= 0.0f && m_rel_y >= 0.0f && m_rel_x < cols && m_rel_y < rows) {
+            g_ed.hovered_col_tile = {static_cast<int>(std::floor(m_rel_x)), static_cast<int>(std::floor(m_rel_y))};
+        }
+    }
+
+    auto apply_col_line = [&](int x0, int y0, int x1, int y1, uint8_t t) {
+        const int dx = std::abs(x1 - x0);
+        const int dy = -std::abs(y1 - y0);
+        const int sx = x0 < x1 ? 1 : -1;
+        const int sy = y0 < y1 ? 1 : -1;
+        int err = dx + dy;
+        int cx = x0, cy = y0;
+        while (true) {
+            if (cx >= 0 && cy >= 0 && cx < cols && cy < rows) {
+                if (g_ed.doc.tileset.get_tile_collision(cx, cy) != t) {
+                    g_ed.doc.tileset.set_tile_collision(cx, cy, t);
+                    g_ed.doc.mark_dirty();
+                }
+            }
+            if (cx == x1 && cy == y1) break;
+            const int e2 = 2 * err;
+            if (e2 >= dy) { err += dy; cx += sx; }
+            if (e2 <= dx) { err += dx; cy += sy; }
+        }
+    };
+
+    if (g_ed.hovered_col_tile.x >= 0 && g_ed.hovered_col_tile.y >= 0) {
+        const int hc = g_ed.hovered_col_tile.x;
+        const int hr = g_ed.hovered_col_tile.y;
+        const float hx0 = origin_x + hc * tile_px;
+        const float hy0 = origin_y + hr * tile_px;
+        const float hx1 = hx0 + tile_px;
+        const float hy1 = hy0 + tile_px;
+
+        draw_list->AddRect(ImVec2(hx0, hy0), ImVec2(hx1, hy1), IM_COL32(255, 255, 255, 240), 0.0f, 0, 2.0f);
+
+        const uint8_t cur_type = g_ed.doc.tileset.get_tile_collision(hc, hr);
+        const CollisionType* ct = g_ed.doc.get_collision_type(cur_type);
+        const std::string cur_name = (cur_type == 0) ? "None" : (ct ? ct->name : "Type " + std::to_string(cur_type));
+        const CollisionType* act = g_ed.doc.get_collision_type(g_ed.active_collision_type);
+        const std::string act_name = (g_ed.active_collision_type == 0) ? "None" : (act ? act->name : "Type " + std::to_string(g_ed.active_collision_type));
+
+        ImGui::SetTooltip("Tile (%d, %d)\nCollision: %s\nLeft-click: set %s\nRight-click: clear (None)",
+                          hc, hr, cur_name.c_str(), act_name.c_str());
+
+        if (io.MouseDown[ImGuiMouseButton_Left] && !space_down && !io.KeyCtrl) {
+            const int prev_x = (g_ed.last_col_painted.x >= 0) ? g_ed.last_col_painted.x : hc;
+            const int prev_y = (g_ed.last_col_painted.y >= 0) ? g_ed.last_col_painted.y : hr;
+            apply_col_line(prev_x, prev_y, hc, hr, g_ed.active_collision_type);
+            g_ed.last_col_painted = {hc, hr};
+        } else if (io.MouseDown[ImGuiMouseButton_Right] && !space_down) {
+            const int prev_x = (g_ed.last_col_painted.x >= 0) ? g_ed.last_col_painted.x : hc;
+            const int prev_y = (g_ed.last_col_painted.y >= 0) ? g_ed.last_col_painted.y : hr;
+            apply_col_line(prev_x, prev_y, hc, hr, 0);
+            g_ed.last_col_painted = {hc, hr};
+        } else {
+            g_ed.last_col_painted = {-1, -1};
+        }
+    } else {
+        if (!io.MouseDown[ImGuiMouseButton_Left] && !io.MouseDown[ImGuiMouseButton_Right]) {
+            g_ed.last_col_painted = {-1, -1};
+        }
+    }
+
+    draw_list->PopClipRect();
+}
+
 static void draw_canvas_viewport_content() {
+    if (g_ed.view_mode == EditorViewMode::TilesetCollision) {
+        draw_tileset_collision_viewport();
+        return;
+    }
+
     const ImVec2 canvas_p0 = ImGui::GetCursorScreenPos();
     const ImVec2 canvas_sz = ImGui::GetContentRegionAvail();
     if (canvas_sz.x < 30.0f || canvas_sz.y < 30.0f) {
@@ -741,8 +1091,6 @@ static void draw_canvas_viewport_content() {
     if (g_ed.settings.collision_overlay) {
         const CollisionGrid col_grid = g_ed.doc.build_collision_grid();
         const float col_step = tile_px * (8.0f / static_cast<float>(g_ed.doc.tile_size));
-        const ImU32 col_solid_color = IM_COL32(255, 60, 40, 90);
-        const ImU32 col_border_color = IM_COL32(255, 80, 60, 180);
 
         const int min_cx = std::max(0, static_cast<int>(std::floor((canvas_p0.x - origin_x) / col_step)));
         const int max_cx = std::min(col_grid.width, static_cast<int>(std::ceil((canvas_p1.x - origin_x) / col_step)));
@@ -751,7 +1099,13 @@ static void draw_canvas_viewport_content() {
 
         for (int cy = min_cy; cy < max_cy; ++cy) {
             for (int cx = min_cx; cx < max_cx; ++cx) {
-                if (col_grid.is_solid(cx, cy)) {
+                const uint8_t type_id = col_grid.get_type(cx, cy);
+                if (type_id != 0) {
+                    const CollisionType* ct = g_ed.doc.get_collision_type(type_id);
+                    const Rgb col_rgb = ct ? ct->color : Rgb{235, 60, 50};
+                    const ImU32 col_solid_color = IM_COL32(col_rgb.r, col_rgb.g, col_rgb.b, 90);
+                    const ImU32 col_border_color = IM_COL32(col_rgb.r, col_rgb.g, col_rgb.b, 180);
+
                     const float cx0 = std::floor(origin_x + static_cast<float>(cx) * col_step);
                     const float cy0 = std::floor(origin_y + static_cast<float>(cy) * col_step);
                     const float cx1 = std::floor(origin_x + static_cast<float>(cx + 1) * col_step);
@@ -1133,6 +1487,14 @@ static void draw_sidebar_content(SDL_Renderer* renderer) {
                     } else if (g_ed.doc.tileset.is_extra(c, r)) {
                         dl->AddRect(ImVec2(x0, y0), ImVec2(x1, y1), IM_COL32(140, 90, 220, 160), 0, 0, 1.0f);
                     }
+
+                    const uint8_t tile_col = g_ed.doc.tileset.get_tile_collision(c, r);
+                    if (tile_col != 0) {
+                        const CollisionType* ct = g_ed.doc.get_collision_type(tile_col);
+                        const Rgb cr = ct ? ct->color : Rgb{235, 60, 50};
+                        dl->AddRectFilled(ImVec2(x1 - 6, y1 - 6), ImVec2(x1 - 1, y1 - 1),
+                                          IM_COL32(cr.r, cr.g, cr.b, 220));
+                    }
                 }
             }
 
@@ -1156,8 +1518,12 @@ static void draw_sidebar_content(SDL_Renderer* renderer) {
                         g_ed.status_msg = "Selected stamp tile (" + std::to_string(hover_c) + ", " + std::to_string(hover_r) + ")";
                     }
 
-                    ImGui::SetTooltip("Tile (%d, %d)%s", hover_c, hover_r,
-                                      g_ed.doc.tileset.is_extra(hover_c, hover_r) ? " [Variant]" : "");
+                    const uint8_t tc = g_ed.doc.tileset.get_tile_collision(hover_c, hover_r);
+                    const CollisionType* ct = g_ed.doc.get_collision_type(tc);
+                    const std::string col_str = (tc == 0) ? "None" : (ct ? ct->name : "Type " + std::to_string(tc));
+                    ImGui::SetTooltip("Tile (%d, %d)%s [Col: %s]", hover_c, hover_r,
+                                      g_ed.doc.tileset.is_extra(hover_c, hover_r) ? " [Variant]" : "",
+                                      col_str.c_str());
                 }
             }
         }
@@ -1211,7 +1577,16 @@ static void draw_sidebar_content(SDL_Renderer* renderer) {
 
     ImGui::Checkbox("Composite PNG", &g_ed.export_png);
     ImGui::Checkbox("MDE Collision JSON", &g_ed.export_col_json);
-    ImGui::Checkbox("Collision BIN", &g_ed.export_col_bin);
+    const int types_used = g_ed.doc.build_collision_grid().count_types_used();
+    if (types_used > 1) {
+        ImGui::BeginDisabled(true);
+        bool dummy_bin = false;
+        ImGui::Checkbox("Collision BIN (Disabled)", &dummy_bin);
+        ImGui::EndDisabled();
+        ImGui::TextColored(ImVec4(1.0f, 0.65f, 0.2f, 1.0f), "BIN disabled: >1 collision types used (%d)", types_used);
+    } else {
+        ImGui::Checkbox("Collision BIN", &g_ed.export_col_bin);
+    }
     ImGui::Checkbox("Map JSON", &g_ed.export_map_json);
 
     ImGui::Spacing();
@@ -1460,13 +1835,21 @@ int run_editor() {
                 g_ed.has_selection = false;
             }
 
-            if (ImGui::IsKeyPressed(ImGuiKey_1) || ImGui::IsKeyPressed(ImGuiKey_P)) g_ed.tool = Tool::Paint;
-            if (ImGui::IsKeyPressed(ImGuiKey_2) || ImGui::IsKeyPressed(ImGuiKey_L)) g_ed.tool = Tool::Line;
-            if (ImGui::IsKeyPressed(ImGuiKey_3) || ImGui::IsKeyPressed(ImGuiKey_E)) g_ed.tool = Tool::Erase;
-            if (ImGui::IsKeyPressed(ImGuiKey_4) || ImGui::IsKeyPressed(ImGuiKey_R)) g_ed.tool = Tool::Rect;
-            if (ImGui::IsKeyPressed(ImGuiKey_5) || ImGui::IsKeyPressed(ImGuiKey_F)) g_ed.tool = Tool::Fill;
-            if (ImGui::IsKeyPressed(ImGuiKey_6) || ImGui::IsKeyPressed(ImGuiKey_S)) g_ed.tool = Tool::Select;
-            if (ImGui::IsKeyPressed(ImGuiKey_7) || ImGui::IsKeyPressed(ImGuiKey_I)) g_ed.tool = Tool::Eyedropper;
+            if (g_ed.view_mode == EditorViewMode::Tilemap) {
+                if (ImGui::IsKeyPressed(ImGuiKey_1) || ImGui::IsKeyPressed(ImGuiKey_P)) g_ed.tool = Tool::Paint;
+                if (ImGui::IsKeyPressed(ImGuiKey_2) || ImGui::IsKeyPressed(ImGuiKey_L)) g_ed.tool = Tool::Line;
+                if (ImGui::IsKeyPressed(ImGuiKey_3) || ImGui::IsKeyPressed(ImGuiKey_E)) g_ed.tool = Tool::Erase;
+                if (ImGui::IsKeyPressed(ImGuiKey_4) || ImGui::IsKeyPressed(ImGuiKey_R)) g_ed.tool = Tool::Rect;
+                if (ImGui::IsKeyPressed(ImGuiKey_5) || ImGui::IsKeyPressed(ImGuiKey_F)) g_ed.tool = Tool::Fill;
+                if (ImGui::IsKeyPressed(ImGuiKey_6) || ImGui::IsKeyPressed(ImGuiKey_S)) g_ed.tool = Tool::Select;
+                if (ImGui::IsKeyPressed(ImGuiKey_7) || ImGui::IsKeyPressed(ImGuiKey_I)) g_ed.tool = Tool::Eyedropper;
+            } else {
+                if (ImGui::IsKeyPressed(ImGuiKey_0)) g_ed.active_collision_type = 0;
+                if (ImGui::IsKeyPressed(ImGuiKey_1) && g_ed.doc.get_collision_type(1)) g_ed.active_collision_type = 1;
+                if (ImGui::IsKeyPressed(ImGuiKey_2) && g_ed.doc.get_collision_type(2)) g_ed.active_collision_type = 2;
+                if (ImGui::IsKeyPressed(ImGuiKey_3) && g_ed.doc.get_collision_type(3)) g_ed.active_collision_type = 3;
+                if (ImGui::IsKeyPressed(ImGuiKey_4) && g_ed.doc.get_collision_type(4)) g_ed.active_collision_type = 4;
+            }
         }
 
         ImGui_ImplSDLRenderer3_NewFrame();
@@ -1531,6 +1914,13 @@ int run_editor() {
                 ImGui::EndMenu();
             }
             if (ImGui::BeginMenu("View")) {
+                if (ImGui::MenuItem("Tilemap Editor Mode", nullptr, g_ed.view_mode == EditorViewMode::Tilemap)) {
+                    g_ed.view_mode = EditorViewMode::Tilemap;
+                }
+                if (ImGui::MenuItem("Tileset Collision Mode", nullptr, g_ed.view_mode == EditorViewMode::TilesetCollision)) {
+                    g_ed.view_mode = EditorViewMode::TilesetCollision;
+                }
+                ImGui::Separator();
                 if (ImGui::MenuItem("Grid Lines", nullptr, g_ed.settings.grid_lines)) {
                     g_ed.settings.grid_lines = !g_ed.settings.grid_lines;
                     persist_settings();
@@ -1619,8 +2009,19 @@ int run_editor() {
         // 3. Status bar at bottom
         ImGui::Separator();
         ImGui::Text("%s", g_ed.status_msg.c_str());
-        ImGui::SameLine(ImGui::GetWindowWidth() - 320);
-        if (g_ed.hovered_cell.x >= 0 && g_ed.hovered_cell.y >= 0) {
+        ImGui::SameLine(ImGui::GetWindowWidth() - 360);
+        if (g_ed.view_mode == EditorViewMode::TilesetCollision) {
+            if (g_ed.hovered_col_tile.x >= 0 && g_ed.hovered_col_tile.y >= 0) {
+                const uint8_t cur_t = g_ed.doc.tileset.get_tile_collision(g_ed.hovered_col_tile.x, g_ed.hovered_col_tile.y);
+                const CollisionType* ct = g_ed.doc.get_collision_type(cur_t);
+                const std::string name = (cur_t == 0) ? "None" : (ct ? ct->name : "Type " + std::to_string(cur_t));
+                ImGui::Text("Tile: (%d, %d) | Collision: %s", g_ed.hovered_col_tile.x, g_ed.hovered_col_tile.y, name.c_str());
+            } else {
+                const CollisionType* act = g_ed.doc.get_collision_type(g_ed.active_collision_type);
+                const std::string act_name = (g_ed.active_collision_type == 0) ? "None" : (act ? act->name : "Type " + std::to_string(g_ed.active_collision_type));
+                ImGui::Text("Collision Mode | Active: %s | %d Types", act_name.c_str(), static_cast<int>(g_ed.doc.collision_types.size()));
+            }
+        } else if (g_ed.hovered_cell.x >= 0 && g_ed.hovered_cell.y >= 0) {
             ImGui::Text("Cell: (%d, %d) | Map: %d×%d (%dpx)", g_ed.hovered_cell.x, g_ed.hovered_cell.y,
                         g_ed.doc.width, g_ed.doc.height, g_ed.doc.tile_size);
         } else {

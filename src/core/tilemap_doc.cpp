@@ -34,6 +34,9 @@ void TilemapDoc::reset(int w, int h, int ts) {
     undo_stack_.clear();
     redo_stack_.clear();
     dirty_ = false;
+
+    collision_types.clear();
+    collision_types.push_back(CollisionType{1, "Type 1", Rgb{235, 60, 50}});
 }
 
 const MapCell& TilemapDoc::get_cell(int x, int y) const {
@@ -570,6 +573,65 @@ void TilemapDoc::resize(int new_w, int new_h, int anchor_x, int anchor_y) {
     mark_dirty();
 }
 
+uint8_t TilemapDoc::add_collision_type() {
+    static const Rgb kPalette[] = {
+        {235, 60, 50},   // 1: Red
+        {40, 180, 100},  // 2: Green
+        {60, 130, 240},  // 3: Blue
+        {235, 190, 40},  // 4: Yellow
+        {160, 80, 230},  // 5: Purple
+        {30, 200, 240},  // 6: Cyan
+        {245, 120, 30},  // 7: Orange
+        {240, 90, 180}   // 8: Magenta
+    };
+    uint8_t max_id = 0;
+    for (const auto& ct : collision_types) {
+        if (ct.id > max_id) max_id = ct.id;
+    }
+    const uint8_t new_id = max_id + 1;
+    CollisionType ct;
+    ct.id = new_id;
+    ct.name = "Type " + std::to_string(new_id);
+    const size_t pal_idx = static_cast<size_t>((new_id - 1) % 8);
+    ct.color = kPalette[pal_idx];
+    collision_types.push_back(ct);
+    mark_dirty();
+    return new_id;
+}
+
+bool TilemapDoc::remove_collision_type(uint8_t id) {
+    if (collision_types.size() <= 1) {
+        return false;
+    }
+    auto it = std::find_if(collision_types.begin(), collision_types.end(),
+                           [id](const CollisionType& ct) { return ct.id == id; });
+    if (it == collision_types.end()) return false;
+    collision_types.erase(it);
+
+    for (auto& tc : tileset.tile_collisions) {
+        if (tc == id) tc = 1;
+    }
+    mark_dirty();
+    return true;
+}
+
+void TilemapDoc::set_collision_type_color(uint8_t id, Rgb color) {
+    for (auto& ct : collision_types) {
+        if (ct.id == id) {
+            ct.color = color;
+            mark_dirty();
+            break;
+        }
+    }
+}
+
+const CollisionType* TilemapDoc::get_collision_type(uint8_t id) const {
+    for (const auto& ct : collision_types) {
+        if (ct.id == id) return &ct;
+    }
+    return nullptr;
+}
+
 CollisionGrid TilemapDoc::build_collision_grid() const {
     CollisionGrid grid;
     // Collision tile size is always 8x8 px
@@ -582,9 +644,12 @@ CollisionGrid TilemapDoc::build_collision_grid() const {
         for (int x = 0; x < width; ++x) {
             const MapCell& c = get_cell(x, y);
             if (!c.is_empty()) {
-                for (int fy = 0; fy < factor; ++fy) {
-                    for (int fx = 0; fx < factor; ++fx) {
-                        grid.set_solid(x * factor + fx, y * factor + fy, true);
+                const uint8_t col_type = tileset.get_tile_collision(c.atlas_x, c.atlas_y);
+                if (col_type != 0) {
+                    for (int fy = 0; fy < factor; ++fy) {
+                        for (int fx = 0; fx < factor; ++fx) {
+                            grid.set_type(x * factor + fx, y * factor + fy, col_type);
+                        }
                     }
                 }
             }

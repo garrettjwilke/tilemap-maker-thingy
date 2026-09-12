@@ -28,11 +28,14 @@ public:
     std::vector<Rgb> palette;
     std::vector<uint8_t> pixels; // Indexed pixels: (cols * tile_size) * (rows * tile_size)
     std::vector<VariantBinding> variants;
+    std::vector<uint8_t> tile_collisions;
     std::string png_path;
     std::string terrain_path;
     std::string error;
 
-    Tileset() = default;
+    Tileset() {
+        init_tile_collisions(1);
+    }
 
     bool is_valid() const { return !pixels.empty() && cols > 0 && rows > 0 && tile_size > 0; }
     int image_width() const { return cols * tile_size; }
@@ -40,6 +43,39 @@ public:
 
     bool in_bounds(int col, int row) const {
         return col >= 0 && row >= 0 && col < cols && row < rows;
+    }
+
+    uint8_t get_tile_collision(int col, int row) const {
+        if (col < 0 || row < 0 || col >= cols || row >= rows) return 0;
+        if (col == 10 && row == 1) {
+            const size_t idx = static_cast<size_t>(row * cols + col);
+            if (idx < tile_collisions.size()) {
+                return tile_collisions[idx];
+            }
+            return 0; // (10, 1) is always empty in standard autotiles
+        }
+        const size_t idx = static_cast<size_t>(row * cols + col);
+        if (idx < tile_collisions.size()) {
+            return tile_collisions[idx];
+        }
+        return 1;
+    }
+
+    void set_tile_collision(int col, int row, uint8_t type) {
+        if (col >= 0 && row >= 0 && col < cols && row < rows) {
+            const size_t idx = static_cast<size_t>(row * cols + col);
+            if (tile_collisions.size() < static_cast<size_t>(cols * rows)) {
+                init_tile_collisions(1);
+            }
+            tile_collisions[idx] = type;
+        }
+    }
+
+    void init_tile_collisions(uint8_t default_type = 1) {
+        tile_collisions.assign(static_cast<size_t>(cols * rows), default_type);
+        if (default_type != 0 && in_bounds(10, 1)) {
+            tile_collisions[static_cast<size_t>(1 * cols + 10)] = 0;
+        }
     }
 
     bool is_extra(int col, int row) const {

@@ -131,7 +131,14 @@ std::string export_mde_collision_json(const TilemapDoc& doc, const std::string& 
 
 std::string export_collision_bin(const TilemapDoc& doc, const std::string& path) {
     const CollisionGrid grid = doc.build_collision_grid();
-    if (!write_binary_file(path, grid.data)) {
+    if (grid.count_types_used() > 1) {
+        return "Cannot export BIN: map uses more than 1 collision type";
+    }
+    std::vector<uint8_t> bin_bytes(grid.data.size(), 0);
+    for (size_t i = 0; i < grid.data.size(); ++i) {
+        bin_bytes[i] = (grid.data[i] != 0) ? 1 : 0;
+    }
+    if (!write_binary_file(path, bin_bytes)) {
         return "Could not write collision BIN to " + path;
     }
     return "";
@@ -149,6 +156,25 @@ std::string save_map_json(const TilemapDoc& doc, const std::string& path) {
     ss << "\t\"origin_y\": " << doc.origin_y << ",\n";
     if (!doc.tileset.png_path.empty()) {
         ss << "\t\"tileset\": \"" << doc.tileset.png_path << "\",\n";
+    }
+    ss << "\t\"collision_types\": [\n";
+    for (size_t i = 0; i < doc.collision_types.size(); ++i) {
+        const auto& ct = doc.collision_types[i];
+        ss << "\t\t{\"id\": " << static_cast<int>(ct.id)
+           << ", \"name\": \"" << ct.name << "\""
+           << ", \"r\": " << static_cast<int>(ct.color.r)
+           << ", \"g\": " << static_cast<int>(ct.color.g)
+           << ", \"b\": " << static_cast<int>(ct.color.b)
+           << "}" << (i + 1 < doc.collision_types.size() ? ",\n" : "\n");
+    }
+    ss << "\t],\n";
+    if (!doc.tileset.tile_collisions.empty()) {
+        ss << "\t\"tileset_collisions\": [";
+        for (size_t i = 0; i < doc.tileset.tile_collisions.size(); ++i) {
+            if (i > 0) ss << ", ";
+            ss << static_cast<int>(doc.tileset.tile_collisions[i]);
+        }
+        ss << "],\n";
     }
     ss << "\t\"cells\": [\n";
     bool first = true;
@@ -236,6 +262,82 @@ std::string load_map_json(TilemapDoc& doc, const std::string& path) {
         }
         if (file_exists(resolved)) {
             doc.tileset.load_from_file(resolved);
+        }
+    }
+
+    // Parse collision types if present
+    size_t col_types_pos = text.find("\"collision_types\"");
+    if (col_types_pos != std::string::npos) {
+        size_t arr_end = text.find(']', col_types_pos);
+        if (arr_end != std::string::npos) {
+            std::vector<CollisionType> parsed_types;
+            size_t pos = col_types_pos;
+            while (pos < arr_end) {
+                auto b_start = text.find('{', pos);
+                if (b_start == std::string::npos || b_start >= arr_end) break;
+                auto b_end = text.find('}', b_start);
+                if (b_end == std::string::npos || b_end > arr_end) break;
+                std::string block = text.substr(b_start, b_end - b_start + 1);
+
+                auto find_block_int = [&](const std::string& key, int def) -> int {
+                    auto kp = block.find("\"" + key + "\"");
+                    if (kp == std::string::npos) return def;
+                    auto cp = block.find(':', kp);
+                    if (cp == std::string::npos) return def;
+                    return std::atoi(block.c_str() + cp + 1);
+                };
+                auto find_block_str = [&](const std::string& key) -> std::string {
+                    auto kp = block.find("\"" + key + "\"");
+                    if (kp == std::string::npos) return "";
+                    auto cp = block.find(':', kp);
+                    if (cp == std::string::npos) return "";
+                    auto q1 = block.find('"', cp + 1);
+                    if (q1 == std::string::npos) return "";
+                    auto q2 = block.find('"', q1 + 1);
+                    if (q2 == std::string::npos) return "";
+                    return block.substr(q1 + 1, q2 - q1 - 1);
+                };
+
+                CollisionType ct;
+                ct.id = static_cast<uint8_t>(find_block_int("id", 1));
+                ct.name = find_block_str("name");
+                if (ct.name.empty()) ct.name = "Type " + std::to_string(ct.id);
+                ct.color.r = static_cast<uint8_t>(find_block_int("r", 235));
+                ct.color.g = static_cast<uint8_t>(find_block_int("g", 60));
+                ct.color.b = static_cast<uint8_t>(find_block_int("b", 50));
+                parsed_types.push_back(ct);
+                pos = b_end + 1;
+            }
+            if (!parsed_types.empty()) {
+                doc.collision_types = std::move(parsed_types);
+            }
+        }
+    }
+
+    // Parse tileset collisions if present
+    size_t tc_pos = text.find("\"tileset_collisions\"");
+    if (tc_pos != std::string::npos) {
+        auto bracket_open = text.find('[', tc_pos);
+        auto bracket_close = text.find(']', bracket_open);
+        if (bracket_open != std::string::npos && bracket_close != std::string::npos) {
+            std::vector<uint8_t> cols_arr;
+            size_t p = bracket_open + 1;
+            while (p < bracket_close) {
+                while (p < bracket_close && (text[p] == ' ' || text[p] == '\t' || text[p] == '\r' || text[p] == '\n' || text[p] == ',')) {
+                    p++;
+                }
+                if (p < bracket_close && std::isdigit(static_cast<unsigned char>(text[p]))) {
+                    cols_arr.push_back(static_cast<uint8_t>(std::atoi(text.c_str() + p)));
+                    while (p < bracket_close && std::isdigit(static_cast<unsigned char>(text[p]))) {
+                        p++;
+                    }
+                } else {
+                    p++;
+                }
+            }
+            if (!cols_arr.empty()) {
+                doc.tileset.tile_collisions = std::move(cols_arr);
+            }
         }
     }
 

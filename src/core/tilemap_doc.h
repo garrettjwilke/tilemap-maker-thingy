@@ -55,10 +55,17 @@ public:
     int origin_y = 0;
     int tile_size = 16;
     Tileset tileset;
+    std::vector<CollisionType> collision_types;
 
     TilemapDoc(int w = 30, int h = 20, int ts = 16);
 
     void reset(int w = 30, int h = 20, int ts = 16);
+
+    // Collision type management
+    uint8_t add_collision_type();
+    bool remove_collision_type(uint8_t id);
+    void set_collision_type_color(uint8_t id, Rgb color);
+    const CollisionType* get_collision_type(uint8_t id) const;
 
     bool in_bounds(int x, int y) const {
         return x >= 0 && y >= 0 && x < width && y < height;

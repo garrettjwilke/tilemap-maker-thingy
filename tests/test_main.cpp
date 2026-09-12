@@ -53,43 +53,122 @@ void test_collision() {
     // Test empty data
     expect(compress_mde_collisions({}).empty(), "empty data should give empty string");
 
-    // Test 1 solid tile
+    // Test 1 solid tile (Type 1)
     // val = 0x0F, count = 1 -> "0000000f!"
     expect(compress_mde_collisions({1}) == "0000000f!", "single solid tile RLE");
 
-    // Test 1 empty tile
+    // Test 1 empty tile (Type 0)
     // val = 0x00, count = 1 -> "00000000!"
     expect(compress_mde_collisions({0}) == "00000000!", "single empty tile RLE");
 
-    // Test 5 solid tiles
+    // Test 5 solid tiles (Type 1)
     // val = 0x0F, count = 5 -> "0000000f5+"
     expect(compress_mde_collisions({1, 1, 1, 1, 1}) == "0000000f5+", "5 solid tiles RLE");
 
-    // Test run of empty then solid
-    // 3 empty, 2 solid -> "000000003+0000000f2+"
-    expect(compress_mde_collisions({0, 0, 0, 1, 1}) == "000000003+0000000f2+", "mixed RLE");
+    // Test Type 2 (val = 0x20 | 0x0F = 0x0000002f)
+    expect(compress_mde_collisions({2}) == "0000002f!", "Type 2 single tile RLE");
+    // Test Type 3 (val = 0x40 | 0x0F = 0x0000004f)
+    expect(compress_mde_collisions({3, 3}) == "0000004f2+", "Type 3 two tiles RLE");
 
-    // Test roundtrip decompression
-    std::vector<uint8_t> orig = {0, 0, 1, 1, 1, 0, 1, 0, 0, 0, 1};
+    // Test run of mixed types: 3 empty, 2 Type 1, 4 Type 2
+    // -> "000000003+0000000f2+0000002f4+"
+    expect(compress_mde_collisions({0, 0, 0, 1, 1, 2, 2, 2, 2}) == "000000003+0000000f2+0000002f4+", "mixed types RLE");
+
+    // Test multi-type roundtrip decompression
+    std::vector<uint8_t> orig = {0, 0, 1, 1, 2, 2, 3, 0, 1, 0, 2, 0, 0, 0, 1};
     std::string rle = compress_mde_collisions(orig);
     std::vector<uint8_t> decomp = decompress_mde_collisions(rle, static_cast<int>(orig.size()));
-    expect(orig == decomp, "RLE decompress roundtrip failed");
+    expect(orig == decomp, "Multi-type RLE decompress roundtrip failed");
 
-    // Test collision grid from TilemapDoc
+    // Test CollisionGrid count_types_used
+    CollisionGrid cg;
+    cg.width = 4;
+    cg.height = 4;
+    cg.data.assign(16, 0);
+    expect(cg.count_types_used() == 0, "empty grid has 0 types used");
+    cg.set_type(1, 1, 1);
+    cg.set_type(2, 2, 1);
+    expect(cg.count_types_used() == 1, "grid with only Type 1 has 1 type used");
+    cg.set_type(3, 3, 2);
+    expect(cg.count_types_used() == 2, "grid with Type 1 and Type 2 has 2 types used");
+
+    // Test TilemapDoc collision type management
     TilemapDoc doc(4, 4, 16);
-    // Placing 1 tile at (1, 1) in 16x16 tile_size -> covers 2x2 cells in 8x8 collision grid
+    expect(doc.collision_types.size() == 1, "default 1 collision type");
+    expect(doc.collision_types[0].id == 1, "default collision type id is 1");
+    expect(doc.collision_types[0].color == Rgb{235, 60, 50}, "default collision type is red");
+
+    // Add Type 2 -> should default to Green
+    uint8_t id2 = doc.add_collision_type();
+    expect(id2 == 2, "added type id 2");
+    expect(doc.collision_types.size() == 2, "now 2 collision types");
+    expect(doc.collision_types[1].color == Rgb{40, 180, 100}, "Type 2 defaults to green");
+
+    // Add Type 3 -> should default to Blue
+    uint8_t id3 = doc.add_collision_type();
+    expect(id3 == 3, "added type id 3");
+    expect(doc.collision_types.size() == 3, "now 3 collision types");
+    expect(doc.collision_types[2].color == Rgb{60, 130, 240}, "Type 3 defaults to blue");
+
+    // Verify that tile (10, 1) is always empty (0) by default in standard autotiles
+    Tileset ts_default;
+    expect(ts_default.get_tile_collision(10, 1) == 0, "tile (10, 1) should default to 0 (empty)");
+    ts_default.init_tile_collisions(1);
+    expect(ts_default.get_tile_collision(10, 1) == 0, "tile (10, 1) remains 0 after init_tile_collisions(1)");
+    expect(ts_default.get_tile_collision(9, 2) == 1, "other tiles like (9, 2) are 1");
+
+    // Test mapping collision directly to tileset tiles:
+    // Placed tile at (1, 1) uses atlas coords (9, 2)
     MapCell mc;
     mc.mode = TileMode::Stamp;
     mc.atlas_x = 9;
     mc.atlas_y = 2;
     doc.set_cell(1, 1, mc);
 
-    CollisionGrid col = doc.build_collision_grid();
-    expect(col.width == 8 && col.height == 8, "16px doc collision grid dims should be 8x8");
-    expect(col.is_solid(2, 2) && col.is_solid(3, 2) && col.is_solid(2, 3) && col.is_solid(3, 3),
-           "tile at (1, 1) should fill collision cells (2,2) to (3,3)");
-    expect(!col.is_solid(0, 0) && !col.is_solid(1, 1) && !col.is_solid(4, 4),
-           "unoccupied areas should be empty in collision");
+    // By default, tileset tile (9, 2) is Type 1 -> collision cells (2,2)..(3,3) are Type 1
+    CollisionGrid col1 = doc.build_collision_grid();
+    expect(col1.get_type(2, 2) == 1 && col1.get_type(3, 3) == 1, "tile at (1, 1) default Type 1 collision");
+    expect(col1.count_types_used() == 1, "1 type used initially");
+
+    // Modify collision on tileset tile (9, 2) to Type 2 (Green)
+    doc.tileset.set_tile_collision(9, 2, 2);
+    // Verify that ALL instances of that tile on the map immediately adjust!
+    CollisionGrid col2 = doc.build_collision_grid();
+    expect(col2.get_type(2, 2) == 2 && col2.get_type(3, 3) == 2, "tile at (1, 1) updated to Type 2 collision");
+    expect(col2.count_types_used() == 1, "still 1 type used (Type 2)");
+
+    // Add a second placed tile with Type 1 collision
+    MapCell mc2;
+    mc2.mode = TileMode::Stamp;
+    mc2.atlas_x = 5;
+    mc2.atlas_y = 1;
+    doc.tileset.set_tile_collision(5, 1, 1);
+    doc.set_cell(2, 2, mc2);
+
+    CollisionGrid col_multi = doc.build_collision_grid();
+    expect(col_multi.count_types_used() == 2, "map now uses 2 collision types");
+
+    // Test conditional BIN export:
+    // When multiple collision types are used, BIN export MUST be rejected!
+    const std::string multi_bin_path = temp_path("multi_col.bin");
+    std::string bin_err = export_collision_bin(doc, multi_bin_path);
+    expect(!bin_err.empty(), "export_collision_bin should fail when multiple collision types exist");
+    std::remove(multi_bin_path.c_str());
+
+    // Clear tile (5, 1) to None (0) -> now only Type 2 remains on the map
+    doc.tileset.set_tile_collision(5, 1, 0);
+    CollisionGrid col_single = doc.build_collision_grid();
+    expect(col_single.count_types_used() == 1, "now only 1 collision type used");
+
+    // When only 1 collision type is used, BIN export MUST succeed
+    std::string bin_ok = export_collision_bin(doc, multi_bin_path);
+    expect(bin_ok.empty(), "export_collision_bin should succeed when single collision type used");
+    std::remove(multi_bin_path.c_str());
+
+    // Test setting tileset tile collision to None (0)
+    doc.tileset.set_tile_collision(9, 2, 0);
+    CollisionGrid col_none = doc.build_collision_grid();
+    expect(!col_none.is_solid(2, 2) && col_none.get_type(2, 2) == 0, "tile set to None has no collision on map");
 }
 
 void test_tilemap_editing() {
@@ -202,6 +281,12 @@ void test_io_and_settings() {
     using namespace tmm;
     TilemapDoc doc(8, 6, 16);
     doc.name = "test_level";
+    doc.add_collision_type(); // Add Type 2 (Green)
+    doc.tileset.cols = 12;
+    doc.tileset.rows = 4;
+    doc.tileset.init_tile_collisions(1);
+    doc.tileset.set_tile_collision(2, 1, 2);
+
     MapCell mc;
     mc.mode = TileMode::Stamp;
     mc.atlas_x = 2;
@@ -214,7 +299,7 @@ void test_io_and_settings() {
 
     expect(save_map_json(doc, map_file).empty(), "save map JSON");
     expect(export_mde_collision_json(doc, col_file).empty(), "export collision JSON");
-    expect(export_collision_bin(doc, bin_file).empty(), "export collision BIN");
+    expect(export_collision_bin(doc, bin_file).empty(), "export collision BIN (single type used on map)");
 
     TilemapDoc loaded;
     expect(load_map_json(loaded, map_file).empty(), "load map JSON");
@@ -222,6 +307,10 @@ void test_io_and_settings() {
     expect(loaded.width == 8 && loaded.height == 6, "loaded dims");
     expect(loaded.get_cell(3, 4).atlas_x == 2 && loaded.get_cell(3, 4).atlas_y == 1, "loaded cell content");
     expect(loaded.get_cell(0, 0).is_empty(), "loaded empty cell");
+    expect(loaded.collision_types.size() == 2, "loaded 2 collision types");
+    expect(loaded.collision_types[1].id == 2, "loaded type 2 id");
+    expect(loaded.collision_types[1].color == Rgb{40, 180, 100}, "loaded type 2 green color");
+    expect(loaded.tileset.get_tile_collision(2, 1) == 2, "loaded tile collision for (2, 1) is 2");
 
     std::remove(map_file.c_str());
     std::remove(col_file.c_str());
