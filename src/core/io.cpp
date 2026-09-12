@@ -121,7 +121,7 @@ std::string export_mde_collision_json(const TilemapDoc& doc, const std::string& 
     ss << "{\n";
     ss << "  \"width\": " << grid.width << ",\n";
     ss << "  \"height\": " << grid.height << ",\n";
-    ss << "  \"collisions\": \"" << rle << "\"\n";
+    ss << "  \"collisions\": \"" << rle << "\",\n";
     ss << "}\n";
     if (!write_text_file(path, ss.str())) {
         return "Could not write collision JSON to " + path;

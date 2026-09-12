@@ -41,8 +41,26 @@ struct CollisionGrid {
     int count_types_used() const;
 };
 
+// MD Engine 32-bit collision values for type IDs (1..13):
+// 0: None / Empty    (0x00000000)
+// 1: Solid           (0x0000000F, COLLISION_ALL)
+// 2: Top             (0x00000001, COLLISION_TOP)
+// 3: Bottom          (0x00000002, COLLISION_BOTTOM)
+// 4: Left            (0x00000004, COLLISION_LEFT)
+// 5: Right           (0x00000008, COLLISION_RIGHT)
+// 6: Ladder          (0x00000010, TILE_PROP_LADDER)
+// 7: Tile Type 1     (0x00000020, TILE_PROP_TTYPE_1)
+// 8: Tile Type 2     (0x00000040, TILE_PROP_TTYPE_2)
+// 9: Tile Type 3     (0x00000060, TILE_PROP_TTYPE_3)
+// 10: Tile Type 4    (0x00000080, TILE_PROP_TTYPE_4)
+// 11: Tile Type 5    (0x000000A0, TILE_PROP_TTYPE_5)
+// 12: Tile Type 6    (0x000000C0, TILE_PROP_TTYPE_6)
+// 13: Tile Type 7    (0x000000E0, TILE_PROP_TTYPE_7)
+uint32_t type_id_to_mde_value(uint8_t type_id);
+uint8_t mde_value_to_type_id(uint32_t val);
+std::string default_collision_type_name(uint8_t id);
+
 // Compresses 8x8 collision grid bytes into MD Engine's 32-bit unsigned RLE format.
-// Type 0 uses 0x00000000, Type 1 uses 0x0000000F, Type N uses (((N - 1) * 0x20) | 0x0F).
 std::string compress_mde_collisions(const std::vector<uint8_t>& data);
 
 // Decompresses MDE RLE format string into byte array (useful for testing & roundtripping)

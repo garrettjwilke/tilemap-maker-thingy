@@ -562,10 +562,17 @@ static void draw_top_toolbar_row() {
             }
         }
 
+        const bool can_add = (g_ed.doc.collision_types.size() < 13);
+        if (!can_add) ImGui::BeginDisabled(true);
         if (ImGui::Button("+ Add Type")) {
-            g_ed.active_collision_type = g_ed.doc.add_collision_type();
-            g_ed.status_msg = "Added new collision type: Type " + std::to_string(g_ed.active_collision_type);
+            const uint8_t new_id = g_ed.doc.add_collision_type();
+            if (new_id > 0) {
+                g_ed.active_collision_type = new_id;
+                const CollisionType* added_ct = g_ed.doc.get_collision_type(new_id);
+                g_ed.status_msg = "Added new collision type: " + (added_ct ? added_ct->name : ("Type " + std::to_string(new_id)));
+            }
         }
+        if (!can_add) ImGui::EndDisabled();
         ImGui::SameLine();
 
         const bool can_remove = (g_ed.doc.collision_types.size() > 1 && g_ed.active_collision_type > 0);

@@ -65,14 +65,38 @@ void test_collision() {
     // val = 0x0F, count = 5 -> "0000000f5+"
     expect(compress_mde_collisions({1, 1, 1, 1, 1}) == "0000000f5+", "5 solid tiles RLE");
 
-    // Test Type 2 (val = 0x20 | 0x0F = 0x0000002f)
-    expect(compress_mde_collisions({2}) == "0000002f!", "Type 2 single tile RLE");
-    // Test Type 3 (val = 0x40 | 0x0F = 0x0000004f)
-    expect(compress_mde_collisions({3, 3}) == "0000004f2+", "Type 3 two tiles RLE");
+    // Test Type 2 (Top, val = 0x00000001)
+    expect(compress_mde_collisions({2}) == "00000001!", "Type 2 Top single tile RLE");
+    // Test Type 3 (Bottom, val = 0x00000002)
+    expect(compress_mde_collisions({3, 3}) == "000000022+", "Type 3 Bottom two tiles RLE");
+    // Test Type 6 (Ladder, val = 0x00000010)
+    expect(compress_mde_collisions({6}) == "00000010!", "Type 6 Ladder single tile RLE");
+    // Test Type 7 (Tile Type 1, val = 0x00000020)
+    expect(compress_mde_collisions({7}) == "00000020!", "Type 7 T1 single tile RLE");
 
     // Test run of mixed types: 3 empty, 2 Type 1, 4 Type 2
-    // -> "000000003+0000000f2+0000002f4+"
-    expect(compress_mde_collisions({0, 0, 0, 1, 1, 2, 2, 2, 2}) == "000000003+0000000f2+0000002f4+", "mixed types RLE");
+    // -> "000000003+0000000f2+000000014+"
+    expect(compress_mde_collisions({0, 0, 0, 1, 1, 2, 2, 2, 2}) == "000000003+0000000f2+000000014+", "mixed types RLE");
+
+    // Test the user's exact valid MD Engine collision string with 1 of each type:
+    // "collisions": "00000000a2+0000000f!00000001!00000002!00000004!00000008!00000010!00000020!00000040!00000060!00000080!000000a0!000000c0!000000e0!0000000010d1+"
+    const std::string user_example = "00000000a2+0000000f!00000001!00000002!00000004!00000008!00000010!00000020!00000040!00000060!00000080!000000a0!000000c0!000000e0!0000000010d1+";
+    const int total_cells = 0xa2 + 13 + 0x10d1; // 162 + 13 + 4305 = 4480 cells
+    std::vector<uint8_t> user_decomp = decompress_mde_collisions(user_example, total_cells);
+    expect(static_cast<int>(user_decomp.size()) == total_cells, "user example decompressed size matches");
+    for (int i = 0; i < 0xa2; ++i) {
+        expect(user_decomp[i] == 0, "initial empty cells in user example");
+    }
+    for (int t = 1; t <= 13; ++t) {
+        expect(user_decomp[0xa2 + t - 1] == t, "collision type 1..13 in user example");
+    }
+    for (int i = 0xa2 + 13; i < total_cells; ++i) {
+        expect(user_decomp[i] == 0, "trailing empty cells in user example");
+    }
+
+    // Recompress and verify it matches the user string character-for-character
+    std::string user_recomp = compress_mde_collisions(user_decomp);
+    expect(user_recomp == user_example, "user example exact roundtrip recompression");
 
     // Test multi-type roundtrip decompression
     std::vector<uint8_t> orig = {0, 0, 1, 1, 2, 2, 3, 0, 1, 0, 2, 0, 0, 0, 1};
@@ -299,6 +323,10 @@ void test_io_and_settings() {
 
     expect(save_map_json(doc, map_file).empty(), "save map JSON");
     expect(export_mde_collision_json(doc, col_file).empty(), "export collision JSON");
+    std::string col_text;
+    expect(read_text_file(col_file, col_text), "read exported collision JSON");
+    expect(col_text.find("\"collisions\": \"") != std::string::npos, "contains collisions");
+    expect(col_text.find("\",\n") != std::string::npos, "collisions line ends with trailing comma for copy/paste");
     expect(export_collision_bin(doc, bin_file).empty(), "export collision BIN (single type used on map)");
 
     TilemapDoc loaded;

@@ -36,7 +36,7 @@ void TilemapDoc::reset(int w, int h, int ts) {
     dirty_ = false;
 
     collision_types.clear();
-    collision_types.push_back(CollisionType{1, "Type 1", Rgb{235, 60, 50}});
+    collision_types.push_back(CollisionType{1, default_collision_type_name(1), Rgb{235, 60, 50}});
 }
 
 const MapCell& TilemapDoc::get_cell(int x, int y) const {
@@ -574,16 +574,24 @@ void TilemapDoc::resize(int new_w, int new_h, int anchor_x, int anchor_y) {
 }
 
 uint8_t TilemapDoc::add_collision_type() {
-    static const Rgb kPalette[] = {
-        {235, 60, 50},   // 1: Red
-        {40, 180, 100},  // 2: Green
-        {60, 130, 240},  // 3: Blue
-        {235, 190, 40},  // 4: Yellow
-        {160, 80, 230},  // 5: Purple
-        {30, 200, 240},  // 6: Cyan
-        {245, 120, 30},  // 7: Orange
-        {240, 90, 180}   // 8: Magenta
+    static const Rgb kPalette[13] = {
+        {235, 60, 50},   // 1: Red (Solid)
+        {40, 180, 100},  // 2: Green (Top)
+        {60, 130, 240},  // 3: Blue (Bottom)
+        {235, 190, 40},  // 4: Yellow (Left)
+        {160, 80, 230},  // 5: Purple (Right)
+        {30, 200, 240},  // 6: Cyan (Ladder)
+        {245, 120, 30},  // 7: Orange (Tile Type 1)
+        {240, 90, 180},  // 8: Magenta (Tile Type 2)
+        {32, 178, 170},  // 9: Teal (Tile Type 3)
+        {150, 220, 40},  // 10: Lime (Tile Type 4)
+        {255, 105, 180}, // 11: Pink (Tile Type 5)
+        {255, 160, 0},   // 12: Amber (Tile Type 6)
+        {120, 110, 240}  // 13: Indigo (Tile Type 7)
     };
+    if (collision_types.size() >= 13) {
+        return 0;
+    }
     uint8_t max_id = 0;
     for (const auto& ct : collision_types) {
         if (ct.id > max_id) max_id = ct.id;
@@ -591,8 +599,8 @@ uint8_t TilemapDoc::add_collision_type() {
     const uint8_t new_id = max_id + 1;
     CollisionType ct;
     ct.id = new_id;
-    ct.name = "Type " + std::to_string(new_id);
-    const size_t pal_idx = static_cast<size_t>((new_id - 1) % 8);
+    ct.name = default_collision_type_name(new_id);
+    const size_t pal_idx = static_cast<size_t>((new_id - 1) % 13);
     ct.color = kPalette[pal_idx];
     collision_types.push_back(ct);
     mark_dirty();
