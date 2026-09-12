@@ -688,8 +688,13 @@ static void draw_canvas_viewport_content() {
         const ImU32 col_solid_color = IM_COL32(255, 60, 40, 90);
         const ImU32 col_border_color = IM_COL32(255, 80, 60, 180);
 
-        for (int cy = 0; cy < col_grid.height; ++cy) {
-            for (int cx = 0; cx < col_grid.width; ++cx) {
+        const int min_cx = std::max(0, static_cast<int>(std::floor((canvas_p0.x - origin_x) / col_step)));
+        const int max_cx = std::min(col_grid.width, static_cast<int>(std::ceil((canvas_p1.x - origin_x) / col_step)));
+        const int min_cy = std::max(0, static_cast<int>(std::floor((canvas_p0.y - origin_y) / col_step)));
+        const int max_cy = std::min(col_grid.height, static_cast<int>(std::ceil((canvas_p1.y - origin_y) / col_step)));
+
+        for (int cy = min_cy; cy < max_cy; ++cy) {
+            for (int cx = min_cx; cx < max_cx; ++cx) {
                 if (col_grid.is_solid(cx, cy)) {
                     const float cx0 = std::floor(origin_x + static_cast<float>(cx) * col_step);
                     const float cy0 = std::floor(origin_y + static_cast<float>(cy) * col_step);
@@ -1148,6 +1153,7 @@ int run_editor() {
         std::fprintf(stderr, "SDL_CreateRenderer failed: %s\n", SDL_GetError());
         return 1;
     }
+    SDL_SetRenderVSync(renderer, 1);
 
     if (!g_ed.settings.last_tileset_path.empty()) {
         if (g_ed.doc.tileset.load_from_file(g_ed.settings.last_tileset_path)) {
@@ -1185,6 +1191,15 @@ int run_editor() {
             if (event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED && event.window.windowID == SDL_GetWindowID(window)) {
                 running = false;
             }
+        }
+
+        const SDL_WindowFlags win_flags = SDL_GetWindowFlags(window);
+        if (win_flags & SDL_WINDOW_MINIMIZED) {
+            SDL_Delay(20);
+            continue;
+        }
+        if (!(win_flags & (SDL_WINDOW_INPUT_FOCUS | SDL_WINDOW_MOUSE_FOCUS))) {
+            SDL_Delay(32);
         }
 
         // Global shortcuts
