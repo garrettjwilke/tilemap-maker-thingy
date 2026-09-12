@@ -164,6 +164,8 @@ std::string save_map_json(const TilemapDoc& doc, const std::string& path) {
             ss << "\t\t\t\"source\": 0,\n";
             ss << "\t\t\t\"atlas_x\": " << c.atlas_x << ",\n";
             ss << "\t\t\t\"atlas_y\": " << c.atlas_y << ",\n";
+            ss << "\t\t\t\"mode\": \"" << (c.mode == TileMode::Terrain ? "terrain" : "stamp") << "\",\n";
+            ss << "\t\t\t\"roll\": " << c.roll << ",\n";
             ss << "\t\t\t\"alt\": 0\n";
             ss << "\t\t}";
         }
@@ -256,6 +258,26 @@ std::string load_map_json(TilemapDoc& doc, const std::string& path) {
                 return std::atoi(block.c_str() + cp + 1);
             };
 
+            auto cell_str = [&](const std::string& key) -> std::string {
+                auto kp = block.find("\"" + key + "\"");
+                if (kp == std::string::npos) return "";
+                auto cp = block.find(':', kp);
+                if (cp == std::string::npos) return "";
+                auto q1 = block.find('"', cp + 1);
+                if (q1 == std::string::npos) return "";
+                auto q2 = block.find('"', q1 + 1);
+                if (q2 == std::string::npos) return "";
+                return block.substr(q1 + 1, q2 - q1 - 1);
+            };
+
+            auto cell_float = [&](const std::string& key, float def) -> float {
+                auto kp = block.find("\"" + key + "\"");
+                if (kp == std::string::npos) return def;
+                auto cp = block.find(':', kp);
+                if (cp == std::string::npos) return def;
+                return std::strtof(block.c_str() + cp + 1, nullptr);
+            };
+
             const int cx = cell_int("x", -1);
             const int cy = cell_int("y", -1);
             const int ax = cell_int("atlas_x", -1);
@@ -263,7 +285,24 @@ std::string load_map_json(TilemapDoc& doc, const std::string& path) {
 
             if (doc.in_bounds(cx, cy) && ax >= 0 && ay >= 0) {
                 MapCell mc;
-                mc.mode = TileMode::Stamp;
+                const std::string mode_str = cell_str("mode");
+                if (mode_str == "stamp") {
+                    mc.mode = TileMode::Stamp;
+                } else if (mode_str == "terrain") {
+                    mc.mode = TileMode::Terrain;
+                } else {
+                    if (ay < 4 && ax < doc.tileset.cols) {
+                        mc.mode = TileMode::Terrain;
+                    } else {
+                        mc.mode = TileMode::Stamp;
+                    }
+                }
+                const float roll_val = cell_float("roll", -1.0f);
+                if (roll_val >= 0.0f && roll_val <= 1.0f) {
+                    mc.roll = roll_val;
+                } else {
+                    mc.roll = std::fmod(std::abs(std::sin(static_cast<float>(cx * 127 + cy * 311))) * 43758.5453f, 1.0f);
+                }
                 mc.atlas_x = ax;
                 mc.atlas_y = ay;
                 doc.set_cell(cx, cy, mc);
@@ -271,6 +310,7 @@ std::string load_map_json(TilemapDoc& doc, const std::string& path) {
             pos = brace_end + 1;
         }
     }
+    doc.solve_all_autotiles();
     doc.clear_dirty();
     return "";
 }

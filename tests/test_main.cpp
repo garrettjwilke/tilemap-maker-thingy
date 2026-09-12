@@ -142,6 +142,26 @@ void test_tilemap_editing() {
     expect(doc.get_cell(6, 6).atlas_x == 4 && doc.get_cell(8, 7).atlas_x == 4, "paste check");
 }
 
+void test_large_level_fast_stroke() {
+    using namespace tmm;
+    TilemapDoc doc(200, 200, 16);
+    doc.begin_stroke("Fast Stroke Large Map");
+    for (int deg = 0; deg < 360; ++deg) {
+        float rad = static_cast<float>(deg) * 3.14159265f / 180.0f;
+        int cx = static_cast<int>(100.0f + 60.0f * std::cos(rad));
+        int cy = static_cast<int>(100.0f + 60.0f * std::sin(rad));
+        doc.paint_cell(cx, cy, TileMode::Stamp, 3, 2, 1);
+    }
+    doc.end_stroke();
+
+    expect(doc.can_undo(), "can undo after large stroke");
+    expect(doc.get_cell(160, 100).atlas_x == 3, "circle point painted");
+    doc.undo();
+    expect(doc.get_cell(160, 100).is_empty(), "circle point empty after undo");
+    doc.redo();
+    expect(doc.get_cell(160, 100).atlas_x == 3, "circle point restored after redo");
+}
+
 void test_flood_fill() {
     using namespace tmm;
     TilemapDoc doc(6, 6, 16);
@@ -280,9 +300,11 @@ void test_real_tilesets() {
     doc16.tileset = ts16;
     // Paint a 3x3 patch with autotiling
     doc16.fill_rect({2, 2, 3, 3}, TileMode::Terrain);
-    // Verify center of patch is (9, 2)
-    expect(doc16.get_cell(3, 3).atlas_x == 9 && doc16.get_cell(3, 3).atlas_y == 2,
-           "center of 3x3 terrain should be autotile center (9, 2)");
+    // Verify center of patch is (9, 2) or a variant of (9, 2)
+    const MapCell& c33 = doc16.get_cell(3, 3);
+    const bool is_center_or_var = (c33.atlas_x == 9 && c33.atlas_y == 2) ||
+                                  (c33.atlas_x >= 12 && c33.atlas_y >= 0 && c33.atlas_y < 4);
+    expect(is_center_or_var, "center of 3x3 terrain should be autotile center (9, 2) or its variant");
 
     const std::string out_png16 = temp_path("test_out_16.png");
     expect(export_composite_png(doc16, out_png16).empty(), "export composite PNG 16px");
@@ -350,17 +372,144 @@ void test_terrain_import() {
     std::remove(jpath.c_str());
 }
 
+void test_line_and_outline_rect() {
+    using namespace tmm;
+    TilemapDoc doc(20, 20, 16);
+
+    // 1. Horizontal line with brush_size = 1
+    doc.draw_line(2, 5, 8, 5, TileMode::Stamp, 4, 1, 1);
+    for (int x = 2; x <= 8; ++x) {
+        expect(doc.get_cell(x, 5).atlas_x == 4 && doc.get_cell(x, 5).atlas_y == 1,
+               "horizontal line cell should be set");
+    }
+    expect(doc.get_cell(1, 5).is_empty(), "cell before line start should be empty");
+    expect(doc.get_cell(9, 5).is_empty(), "cell after line end should be empty");
+    expect(doc.get_cell(5, 4).is_empty(), "cell above line should be empty");
+
+    // 2. Erase line
+    doc.erase_line(4, 5, 6, 5, 1);
+    expect(doc.get_cell(4, 5).is_empty() && doc.get_cell(5, 5).is_empty() && doc.get_cell(6, 5).is_empty(),
+           "erased line cells should be empty");
+    expect(!doc.get_cell(3, 5).is_empty() && !doc.get_cell(7, 5).is_empty(),
+           "surrounding line cells should remain");
+
+    // 3. Diagonal line
+    doc.draw_line(0, 0, 4, 4, TileMode::Stamp, 1, 2, 1);
+    for (int i = 0; i <= 4; ++i) {
+        expect(doc.get_cell(i, i).atlas_x == 1 && doc.get_cell(i, i).atlas_y == 2,
+               "diagonal line cell should be set");
+    }
+
+    // 4. Line with brush_size = 2
+    doc.draw_line(10, 10, 12, 10, TileMode::Stamp, 2, 2, 2);
+    for (int x = 10; x <= 13; ++x) {
+        expect(doc.get_cell(x, 10).atlas_x == 2 && doc.get_cell(x, 11).atlas_x == 2,
+               "brush_size 2 line cells should be set");
+    }
+
+    // 5. Undo and redo for draw_line
+    expect(doc.can_undo(), "can undo after draw_line");
+    doc.undo();
+    expect(doc.get_cell(10, 10).is_empty() && doc.get_cell(12, 11).is_empty(),
+           "undo should revert brush_size 2 line");
+    doc.redo();
+    expect(!doc.get_cell(10, 10).is_empty() && !doc.get_cell(12, 11).is_empty(),
+           "redo should restore brush_size 2 line");
+
+    // 6. Outline rect (brush_size = 1)
+    TilemapDoc rect_doc(20, 20, 16);
+    rect_doc.outline_rect({3, 3, 6, 6}, TileMode::Stamp, 7, 1, 1);
+    // Border cells should be filled
+    expect(rect_doc.get_cell(3, 3).atlas_x == 7, "rect top-left border");
+    expect(rect_doc.get_cell(8, 3).atlas_x == 7, "rect top-right border");
+    expect(rect_doc.get_cell(3, 8).atlas_x == 7, "rect bottom-left border");
+    expect(rect_doc.get_cell(8, 8).atlas_x == 7, "rect bottom-right border");
+    expect(rect_doc.get_cell(5, 3).atlas_x == 7, "rect top border");
+    expect(rect_doc.get_cell(5, 8).atlas_x == 7, "rect bottom border");
+    expect(rect_doc.get_cell(3, 5).atlas_x == 7, "rect left border");
+    expect(rect_doc.get_cell(8, 5).atlas_x == 7, "rect right border");
+    // Interior cells must be empty
+    for (int y = 4; y <= 7; ++y) {
+        for (int x = 4; x <= 7; ++x) {
+            expect(rect_doc.get_cell(x, y).is_empty(), "outline rect interior cell must be empty");
+        }
+    }
+
+    // 7. Outline rect with brush_size = 2
+    TilemapDoc thick_doc(20, 20, 16);
+    thick_doc.outline_rect({5, 5, 8, 8}, TileMode::Stamp, 3, 2, 2);
+    // Thickness of 2: columns 5,6 and 11,12 are border; rows 5,6 and 11,12 are border
+    expect(thick_doc.get_cell(5, 5).atlas_x == 3 && thick_doc.get_cell(6, 6).atlas_x == 3,
+           "thick border top-left");
+    expect(thick_doc.get_cell(11, 11).atlas_x == 3 && thick_doc.get_cell(12, 12).atlas_x == 3,
+           "thick border bottom-right");
+    // Center cell (8, 8) must be empty
+    expect(thick_doc.get_cell(8, 8).is_empty(), "thick outline center (8, 8) should be empty");
+    expect(thick_doc.get_cell(9, 9).is_empty(), "thick outline center (9, 9) should be empty");
+
+    // 8. Erase outline rect
+    rect_doc.erase_outline_rect({3, 3, 6, 6}, 1);
+    expect(rect_doc.get_cell(3, 3).is_empty(), "erased outline border should be empty");
+    expect(rect_doc.get_cell(8, 8).is_empty(), "erased outline border should be empty");
+
+    // 9. Undo/redo outline rect
+    rect_doc.undo();
+    expect(rect_doc.get_cell(3, 3).atlas_x == 7, "undo erase outline should restore border");
+    rect_doc.redo();
+    expect(rect_doc.get_cell(3, 3).is_empty(), "redo erase outline should re-empty border");
+}
+
+void test_c_header_variants() {
+    using namespace tmm;
+    const std::string hpath = temp_path("test_color_variants.h");
+    const std::string header_content =
+        "#pragma once\n"
+        "typedef struct {\n"
+        "    int extra_x, extra_y;\n"
+        "    int root_x, root_y;\n"
+        "    int weight;\n"
+        "} AtmVariantDef;\n\n"
+        "static const AtmVariantDef kColorVariants[] = {\n"
+        "    { 12, 0, 9, 2, 80 },\n"
+        "    { 12, 1, 9, 2, 60 },\n"
+        "    { 12, 2, 9, 2, 40 }\n"
+        "};\n";
+
+    {
+        std::ofstream f(hpath);
+        f << header_content;
+    }
+
+    Tileset ts;
+    expect(ts.import_variants_file(hpath), "import variants from C header file");
+    expect(ts.variants.size() == 3, "should parse 3 variants from header");
+    expect(ts.variants[0].x == 12 && ts.variants[0].y == 0 && ts.variants[0].root_x == 9 && ts.variants[0].root_y == 2,
+           "variant 0 mapping");
+    expect(std::abs(ts.variants[0].probability - 0.8f) < 0.01f, "variant 0 weight converted to probability 0.8");
+    expect(std::abs(ts.variants[1].probability - 0.6f) < 0.01f, "variant 1 weight converted to probability 0.6");
+    expect(std::abs(ts.variants[2].probability - 0.4f) < 0.01f, "variant 2 weight converted to probability 0.4");
+
+    // Test resolve_variant with high roll
+    Cell resolved = ts.resolve_variant(9, 2, 0.95f);
+    expect(resolved.x == 12, "high roll should pick one of the column 12 variants");
+
+    std::remove(hpath.c_str());
+}
+
 } // namespace
 
 int main() {
     test_autotile_rules();
     test_collision();
     test_tilemap_editing();
+    test_large_level_fast_stroke();
     test_flood_fill();
     test_canvas_resize();
     test_io_and_settings();
     test_real_tilesets();
     test_terrain_import();
+    test_line_and_outline_rect();
+    test_c_header_variants();
 
     if (g_fails) {
         std::cerr << g_fails << " test(s) failed\n";

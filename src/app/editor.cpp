@@ -23,7 +23,7 @@
 
 namespace tmm {
 
-enum class Tool { Paint, Erase, Rect, Fill, Select, Eyedropper };
+enum class Tool { Paint, Line, Erase, Rect, Fill, Select, Eyedropper };
 
 struct EditorState {
     TilemapDoc doc;
@@ -34,6 +34,7 @@ struct EditorState {
     int stamp_col = 9;
     int stamp_row = 2;
     int brush_size = 1;
+    bool rect_fill = true;
 
     // Viewport
     float zoom = 2.0f;
@@ -51,7 +52,10 @@ struct EditorState {
     bool is_drawing = false;
     Cell drag_start = {0, 0};
     Cell last_mouse_cell = {-1, -1};
+    Cell last_painted_cell = {-1, -1};
     bool right_click_erasing = false;
+    std::vector<ImVec2> stroke_points;
+    std::vector<ImVec2> pending_mouse_moves;
 
     // Selection
     bool has_selection = false;
@@ -289,13 +293,14 @@ static void persist_settings(SDL_Window* window = nullptr) {
 }
 
 static void open_tileset_dialog(SDL_Renderer* renderer) {
-    nfdu8filteritem_t filters[3] = {
-        {"Tileset Files (*.png, *.terrain, *.json)", "png,terrain,json"},
+    nfdu8filteritem_t filters[4] = {
+        {"Tileset Files (*.png, *.h, *.terrain, *.json)", "png,h,terrain,json"},
         {"PNG Images (*.png)", "png"},
+        {"C Headers (*.h)", "h"},
         {"Terrain Metadata (*.terrain, *.json)", "terrain,json"}
     };
     nfdu8char_t* out_path = nullptr;
-    nfdresult_t res = NFD_OpenDialogU8(&out_path, filters, 3, nullptr);
+    nfdresult_t res = NFD_OpenDialogU8(&out_path, filters, 4, nullptr);
     if (res == NFD_OKAY && out_path) {
         if (g_ed.doc.tileset.load_from_file(out_path)) {
             g_ed.doc.tile_size = g_ed.doc.tileset.tile_size;
@@ -311,6 +316,37 @@ static void open_tileset_dialog(SDL_Renderer* renderer) {
             persist_settings();
         } else {
             g_ed.status_msg = "Error loading tileset: " + g_ed.doc.tileset.error;
+        }
+        NFD_FreePathU8(out_path);
+    }
+}
+
+static void open_terrain_dialog(SDL_Renderer* renderer) {
+    nfdu8filteritem_t filters[3] = {
+        {"Terrain / Variants (*.h, *.terrain, *.json)", "h,terrain,json"},
+        {"C Headers (*.h)", "h"},
+        {"Terrain Metadata (*.terrain, *.json)", "terrain,json"}
+    };
+    nfdu8char_t* out_path = nullptr;
+    nfdresult_t res = NFD_OpenDialogU8(&out_path, filters, 3, nullptr);
+    if (res == NFD_OKAY && out_path) {
+        bool ok = false;
+        if (g_ed.doc.tileset.is_valid()) {
+            ok = g_ed.doc.tileset.import_variants_file(out_path);
+        } else {
+            ok = g_ed.doc.tileset.load_from_file(out_path);
+            if (ok) {
+                g_ed.doc.tile_size = g_ed.doc.tileset.tile_size;
+                update_tileset_texture(renderer);
+            }
+        }
+        if (ok) {
+            g_ed.doc.solve_all_autotiles();
+            g_ed.status_msg = "Imported terrain (" + std::to_string(g_ed.doc.tileset.variants.size()) +
+                              " variants): " + std::string(out_path);
+            persist_settings();
+        } else {
+            g_ed.status_msg = "Error importing terrain/variants: " + g_ed.doc.tileset.error;
         }
         NFD_FreePathU8(out_path);
     }
@@ -455,11 +491,31 @@ static void draw_top_toolbar_row() {
     };
 
     tool_button("Paint", Tool::Paint, "1");
-    tool_button("Erase", Tool::Erase, "2");
-    tool_button("Rect", Tool::Rect, "3");
-    tool_button("Fill", Tool::Fill, "4");
-    tool_button("Select", Tool::Select, "5");
-    tool_button("Pick", Tool::Eyedropper, "6");
+    tool_button("Line", Tool::Line, "2");
+    tool_button("Erase", Tool::Erase, "3");
+    tool_button("Rect", Tool::Rect, "4");
+    tool_button("Fill", Tool::Fill, "5");
+    tool_button("Select", Tool::Select, "6");
+    tool_button("Pick", Tool::Eyedropper, "7");
+
+    if (g_ed.tool == Tool::Rect) {
+        ImGui::TextDisabled("|");
+        ImGui::SameLine();
+        {
+            ScopedStyleColor col(ImGuiCol_Button, ImVec4(0.24f, 0.48f, 0.80f, 1.0f), g_ed.rect_fill);
+            if (ImGui::Button("Rect: Fill")) {
+                g_ed.rect_fill = true;
+            }
+        }
+        ImGui::SameLine();
+        {
+            ScopedStyleColor col(ImGuiCol_Button, ImVec4(0.24f, 0.48f, 0.80f, 1.0f), !g_ed.rect_fill);
+            if (ImGui::Button("Rect: Outline")) {
+                g_ed.rect_fill = false;
+            }
+        }
+        ImGui::SameLine();
+    }
 
     ImGui::TextDisabled("|");
     ImGui::SameLine();
@@ -725,7 +781,7 @@ static void draw_canvas_viewport_content() {
 
     // Brush / Tool Preview
     if (is_hovered && !space_down && in_map) {
-        const int bs = (g_ed.tool == Tool::Paint || g_ed.tool == Tool::Erase) ? g_ed.brush_size : 1;
+        const int bs = (g_ed.tool == Tool::Paint || g_ed.tool == Tool::Line || g_ed.tool == Tool::Erase || (g_ed.tool == Tool::Rect && !g_ed.rect_fill)) ? g_ed.brush_size : 1;
         const float bx0 = cell_to_screen_x(cell_x);
         const float by0 = cell_to_screen_y(cell_y);
         const float bx1 = cell_to_screen_x(cell_x + bs);
@@ -734,7 +790,7 @@ static void draw_canvas_viewport_content() {
         if (g_ed.tool == Tool::Erase) {
             draw_list->AddRectFilled(ImVec2(bx0, by0), ImVec2(bx1, by1), IM_COL32(230, 50, 50, 80));
             draw_list->AddRect(ImVec2(bx0, by0), ImVec2(bx1, by1), IM_COL32(255, 80, 80, 220), 0.0f, 0, 1.5f);
-        } else if (g_ed.tool == Tool::Paint) {
+        } else if (g_ed.tool == Tool::Paint || g_ed.tool == Tool::Line || (g_ed.tool == Tool::Rect && !g_ed.rect_fill)) {
             if (has_texture && g_ed.paint_mode == TileMode::Stamp) {
                 const float u0 = static_cast<float>(g_ed.stamp_col * ts) * inv_tex_w;
                 const float v0 = static_cast<float>(g_ed.stamp_row * ts) * inv_tex_h;
@@ -771,6 +827,9 @@ static void draw_canvas_viewport_content() {
         g_ed.is_drawing = true;
         g_ed.drag_start = {cell_x, cell_y};
         g_ed.last_mouse_cell = {cell_x, cell_y};
+        g_ed.last_painted_cell = {cell_x, cell_y};
+        g_ed.stroke_points.clear();
+        g_ed.stroke_points.push_back(ImVec2(rel_x, rel_y));
         g_ed.right_click_erasing = right_clicked;
 
         if (g_ed.paste_mode && left_clicked) {
@@ -780,7 +839,7 @@ static void draw_canvas_viewport_content() {
         } else if (g_ed.tool == Tool::Paint && !g_ed.right_click_erasing) {
             g_ed.doc.begin_stroke(g_ed.paint_mode == TileMode::Terrain ? "Paint Terrain" : "Paint Stamp");
             g_ed.doc.paint_cell(cell_x, cell_y, g_ed.paint_mode, g_ed.stamp_col, g_ed.stamp_row, g_ed.brush_size);
-        } else if (g_ed.tool == Tool::Erase || g_ed.right_click_erasing) {
+        } else if ((g_ed.tool == Tool::Erase || g_ed.right_click_erasing) && g_ed.tool != Tool::Line && g_ed.tool != Tool::Rect && g_ed.tool != Tool::Select) {
             g_ed.doc.begin_stroke("Erase");
             g_ed.doc.erase_cell(cell_x, cell_y, g_ed.brush_size);
         } else if (g_ed.tool == Tool::Fill) {
@@ -804,15 +863,117 @@ static void draw_canvas_viewport_content() {
 
     if (g_ed.is_drawing) {
         if (ImGui::IsMouseDown(ImGuiMouseButton_Left) || ImGui::IsMouseDown(ImGuiMouseButton_Right)) {
-            if (g_ed.tool == Tool::Paint || g_ed.tool == Tool::Erase || g_ed.right_click_erasing) {
-                if (cell_x != g_ed.last_mouse_cell.x || cell_y != g_ed.last_mouse_cell.y) {
-                    if (g_ed.right_click_erasing || g_ed.tool == Tool::Erase) {
-                        g_ed.doc.erase_cell(cell_x, cell_y, g_ed.brush_size);
-                    } else {
-                        g_ed.doc.paint_cell(cell_x, cell_y, g_ed.paint_mode, g_ed.stamp_col, g_ed.stamp_row, g_ed.brush_size);
+            if (g_ed.tool == Tool::Paint || g_ed.tool == Tool::Erase || (g_ed.right_click_erasing && g_ed.tool != Tool::Line && g_ed.tool != Tool::Rect && g_ed.tool != Tool::Select)) {
+                auto paint_or_erase_cell = [&](int cx, int cy) {
+                    if (cx == g_ed.last_painted_cell.x && cy == g_ed.last_painted_cell.y) {
+                        return;
                     }
-                    g_ed.last_mouse_cell = {cell_x, cell_y};
+                    if (g_ed.right_click_erasing || g_ed.tool == Tool::Erase) {
+                        g_ed.doc.erase_cell(cx, cy, g_ed.brush_size);
+                    } else {
+                        g_ed.doc.paint_cell(cx, cy, g_ed.paint_mode, g_ed.stamp_col, g_ed.stamp_row, g_ed.brush_size);
+                    }
+                    g_ed.last_painted_cell = {cx, cy};
+                    g_ed.last_mouse_cell = {cx, cy};
+                };
+
+                auto catmull_rom = [](const ImVec2& p0, const ImVec2& p1, const ImVec2& p2, const ImVec2& p3, float t) -> ImVec2 {
+                    const float t2 = t * t;
+                    const float t3 = t2 * t;
+                    const float f0 = -0.5f * t3 + t2 - 0.5f * t;
+                    const float f1 = 1.5f * t3 - 2.5f * t2 + 1.0f;
+                    const float f2 = -1.5f * t3 + 2.0f * t2 + 0.5f * t;
+                    const float f3 = 0.5f * t3 - 0.5f * t2;
+                    return ImVec2(
+                        p0.x * f0 + p1.x * f1 + p2.x * f2 + p3.x * f3,
+                        p0.y * f0 + p1.y * f1 + p2.y * f2 + p3.y * f3
+                    );
+                };
+
+                auto add_and_interpolate_stroke = [&](float fx, float fy) {
+                    const ImVec2 new_pt(fx, fy);
+                    if (g_ed.stroke_points.empty()) {
+                        g_ed.stroke_points.push_back(new_pt);
+                        paint_or_erase_cell(static_cast<int>(std::floor(fx)), static_cast<int>(std::floor(fy)));
+                        return;
+                    }
+
+                    const ImVec2 prev_pt = g_ed.stroke_points.back();
+                    const float dist = std::hypot(new_pt.x - prev_pt.x, new_pt.y - prev_pt.y);
+                    if (dist < 0.05f) {
+                        return;
+                    }
+
+                    g_ed.stroke_points.push_back(new_pt);
+                    const size_t n = g_ed.stroke_points.size();
+                    const ImVec2 p1 = prev_pt;
+                    const ImVec2 p2 = new_pt;
+                    const ImVec2 p0 = (n >= 3) ? g_ed.stroke_points[n - 3] : ImVec2(2.0f * p1.x - p2.x, 2.0f * p1.y - p2.y);
+                    const ImVec2 p3 = ImVec2(2.0f * p2.x - p1.x, 2.0f * p2.y - p1.y);
+
+                    // Step along the curve with sub-tile increments so no intermediate cells are skipped
+                    const int steps = std::min(500, std::max(1, static_cast<int>(std::ceil(dist / 0.2f))));
+                    for (int s = 1; s <= steps; ++s) {
+                        const float t = static_cast<float>(s) / static_cast<float>(steps);
+                        const ImVec2 pos = catmull_rom(p0, p1, p2, p3, t);
+                        const int cx = static_cast<int>(std::floor(pos.x));
+                        const int cy = static_cast<int>(std::floor(pos.y));
+                        paint_or_erase_cell(cx, cy);
+                    }
+
+                    if (g_ed.stroke_points.size() > 64) {
+                        g_ed.stroke_points.erase(g_ed.stroke_points.begin(), g_ed.stroke_points.begin() + 32);
+                    }
+                };
+
+                std::vector<ImVec2> pts = g_ed.pending_mouse_moves;
+                if (pts.empty() || pts.back().x != io.MousePos.x || pts.back().y != io.MousePos.y) {
+                    pts.push_back(io.MousePos);
                 }
+
+                for (const auto& sp : pts) {
+                    const float fx = (sp.x - origin_x) / tile_px;
+                    const float fy = (sp.y - origin_y) / tile_px;
+                    add_and_interpolate_stroke(fx, fy);
+                }
+                g_ed.pending_mouse_moves.clear();
+            } else if (g_ed.tool == Tool::Line) {
+                const int x0 = g_ed.drag_start.x;
+                const int y0 = g_ed.drag_start.y;
+                const int x1 = cell_x;
+                const int y1 = cell_y;
+                const int dx = std::abs(x1 - x0);
+                const int dy = -std::abs(y1 - y0);
+                const int sx = (x0 < x1) ? 1 : -1;
+                const int sy = (y0 < y1) ? 1 : -1;
+                int err = dx + dy;
+                int x = x0;
+                int y = y0;
+                const int bs = g_ed.brush_size;
+
+                const ImU32 fill_col = g_ed.right_click_erasing ? IM_COL32(220, 50, 50, 80) : IM_COL32(80, 200, 120, 90);
+                const ImU32 border_col = g_ed.right_click_erasing ? IM_COL32(255, 80, 80, 200) : IM_COL32(100, 230, 140, 200);
+
+                while (true) {
+                    const float px0 = cell_to_screen_x(x);
+                    const float py0 = cell_to_screen_y(y);
+                    const float px1 = cell_to_screen_x(x + bs);
+                    const float py1 = cell_to_screen_y(y + bs);
+                    draw_list->AddRectFilled(ImVec2(px0, py0), ImVec2(px1, py1), fill_col);
+                    draw_list->AddRect(ImVec2(px0, py0), ImVec2(px1, py1), border_col, 0.0f, 0, 1.0f);
+
+                    if (x == x1 && y == y1) break;
+                    const int e2 = 2 * err;
+                    if (e2 >= dy) { err += dy; x += sx; }
+                    if (e2 <= dx) { err += dx; y += sy; }
+                }
+
+                const float start_center_x = cell_to_screen_x(x0) + (bs * tile_px * 0.5f);
+                const float start_center_y = cell_to_screen_y(y0) + (bs * tile_px * 0.5f);
+                const float curr_center_x = cell_to_screen_x(x1) + (bs * tile_px * 0.5f);
+                const float curr_center_y = cell_to_screen_y(y1) + (bs * tile_px * 0.5f);
+                draw_list->AddLine(ImVec2(start_center_x, start_center_y), ImVec2(curr_center_x, curr_center_y),
+                                   g_ed.right_click_erasing ? IM_COL32(255, 100, 100, 220) : IM_COL32(120, 255, 160, 220), 1.5f);
             } else if (g_ed.tool == Tool::Rect || g_ed.tool == Tool::Select) {
                 const int rx = std::min(g_ed.drag_start.x, cell_x);
                 const int ry = std::min(g_ed.drag_start.y, cell_y);
@@ -823,23 +984,60 @@ static void draw_canvas_viewport_content() {
                 const float rpx1 = cell_to_screen_x(rx + rw);
                 const float rpy1 = cell_to_screen_y(ry + rh);
 
-                draw_list->AddRectFilled(ImVec2(rpx0, rpy0), ImVec2(rpx1, rpy1),
-                                         g_ed.right_click_erasing ? IM_COL32(220, 50, 50, 70) : IM_COL32(60, 160, 240, 70));
-                draw_list->AddRect(ImVec2(rpx0, rpy0), ImVec2(rpx1, rpy1),
-                                   g_ed.right_click_erasing ? IM_COL32(255, 80, 80, 240) : IM_COL32(80, 180, 255, 240), 0.0f, 0, 2.0f);
+                const ImU32 fill_col = g_ed.right_click_erasing ? IM_COL32(220, 50, 50, 70) : IM_COL32(60, 160, 240, 70);
+                const ImU32 border_col = g_ed.right_click_erasing ? IM_COL32(255, 80, 80, 240) : IM_COL32(80, 180, 255, 240);
+
+                if (g_ed.tool == Tool::Select || g_ed.rect_fill) {
+                    draw_list->AddRectFilled(ImVec2(rpx0, rpy0), ImVec2(rpx1, rpy1), fill_col);
+                    draw_list->AddRect(ImVec2(rpx0, rpy0), ImVec2(rpx1, rpy1), border_col, 0.0f, 0, 2.0f);
+                } else {
+                    const int bs = std::min(g_ed.brush_size, std::min(rw, rh));
+                    const float inner_x0 = cell_to_screen_x(rx + bs);
+                    const float inner_y0 = cell_to_screen_y(ry + bs);
+                    const float inner_x1 = cell_to_screen_x(rx + rw - bs);
+                    const float inner_y1 = cell_to_screen_y(ry + rh - bs);
+
+                    if (bs * 2 >= rw || bs * 2 >= rh) {
+                        draw_list->AddRectFilled(ImVec2(rpx0, rpy0), ImVec2(rpx1, rpy1), fill_col);
+                    } else {
+                        draw_list->AddRectFilled(ImVec2(rpx0, rpy0), ImVec2(rpx1, inner_y0), fill_col); // Top
+                        draw_list->AddRectFilled(ImVec2(rpx0, inner_y1), ImVec2(rpx1, rpy1), fill_col); // Bottom
+                        draw_list->AddRectFilled(ImVec2(rpx0, inner_y0), ImVec2(inner_x0, inner_y1), fill_col); // Left
+                        draw_list->AddRectFilled(ImVec2(inner_x1, inner_y0), ImVec2(rpx1, inner_y1), fill_col); // Right
+                        draw_list->AddRect(ImVec2(inner_x0, inner_y0), ImVec2(inner_x1, inner_y1), border_col, 0.0f, 0, 1.0f);
+                    }
+                    draw_list->AddRect(ImVec2(rpx0, rpy0), ImVec2(rpx1, rpy1), border_col, 0.0f, 0, 2.0f);
+                }
             }
         } else {
-            if (g_ed.tool == Tool::Paint || g_ed.tool == Tool::Erase || g_ed.right_click_erasing) {
+            if (g_ed.tool == Tool::Paint || g_ed.tool == Tool::Erase || (g_ed.right_click_erasing && g_ed.tool != Tool::Line && g_ed.tool != Tool::Rect && g_ed.tool != Tool::Select)) {
                 g_ed.doc.end_stroke();
+                g_ed.stroke_points.clear();
+                g_ed.last_painted_cell = {-1, -1};
+            } else if (g_ed.tool == Tool::Line) {
+                if (g_ed.right_click_erasing) {
+                    g_ed.doc.erase_line(g_ed.drag_start.x, g_ed.drag_start.y, cell_x, cell_y, g_ed.brush_size);
+                } else {
+                    g_ed.doc.draw_line(g_ed.drag_start.x, g_ed.drag_start.y, cell_x, cell_y,
+                                       g_ed.paint_mode, g_ed.stamp_col, g_ed.stamp_row, g_ed.brush_size);
+                }
             } else if (g_ed.tool == Tool::Rect) {
                 const int rx = std::min(g_ed.drag_start.x, cell_x);
                 const int ry = std::min(g_ed.drag_start.y, cell_y);
                 const int rw = std::abs(cell_x - g_ed.drag_start.x) + 1;
                 const int rh = std::abs(cell_y - g_ed.drag_start.y) + 1;
-                if (g_ed.right_click_erasing) {
-                    g_ed.doc.erase_rect({rx, ry, rw, rh});
+                if (g_ed.rect_fill) {
+                    if (g_ed.right_click_erasing) {
+                        g_ed.doc.erase_rect({rx, ry, rw, rh});
+                    } else {
+                        g_ed.doc.fill_rect({rx, ry, rw, rh}, g_ed.paint_mode, g_ed.stamp_col, g_ed.stamp_row);
+                    }
                 } else {
-                    g_ed.doc.fill_rect({rx, ry, rw, rh}, g_ed.paint_mode, g_ed.stamp_col, g_ed.stamp_row);
+                    if (g_ed.right_click_erasing) {
+                        g_ed.doc.erase_outline_rect({rx, ry, rw, rh}, g_ed.brush_size);
+                    } else {
+                        g_ed.doc.outline_rect({rx, ry, rw, rh}, g_ed.paint_mode, g_ed.stamp_col, g_ed.stamp_row, g_ed.brush_size);
+                    }
                 }
             } else if (g_ed.tool == Tool::Select) {
                 const int rx = std::min(g_ed.drag_start.x, cell_x);
@@ -872,6 +1070,9 @@ static void draw_sidebar_content(SDL_Renderer* renderer) {
     ImGui::TextColored(sec_hdr_col, "TILESET");
     if (ImGui::Button("Import Tileset…", ImVec2(-1, 28))) {
         open_tileset_dialog(renderer);
+    }
+    if (ImGui::Button("Import Terrain / Variants…", ImVec2(-1, 24))) {
+        open_terrain_dialog(renderer);
     }
 
     if (g_ed.doc.tileset.is_valid()) {
@@ -1178,9 +1379,13 @@ int run_editor() {
     while (running) {
         g_ed.has_pinch = false;
         g_ed.pinch_scale = 1.0f;
+        g_ed.pending_mouse_moves.clear();
         SDL_Event event;
         while (SDL_PollEvent(&event)) {
             ImGui_ImplSDL3_ProcessEvent(&event);
+            if (event.type == SDL_EVENT_MOUSE_MOTION) {
+                g_ed.pending_mouse_moves.push_back(ImVec2(static_cast<float>(event.motion.x), static_cast<float>(event.motion.y)));
+            }
             if (event.type == SDL_EVENT_PINCH_UPDATE && event.pinch.scale > 0.0f) {
                 g_ed.pinch_scale *= event.pinch.scale;
                 g_ed.has_pinch = true;
@@ -1255,12 +1460,13 @@ int run_editor() {
                 g_ed.has_selection = false;
             }
 
-            if (ImGui::IsKeyPressed(ImGuiKey_1)) g_ed.tool = Tool::Paint;
-            if (ImGui::IsKeyPressed(ImGuiKey_2)) g_ed.tool = Tool::Erase;
-            if (ImGui::IsKeyPressed(ImGuiKey_3)) g_ed.tool = Tool::Rect;
-            if (ImGui::IsKeyPressed(ImGuiKey_4)) g_ed.tool = Tool::Fill;
-            if (ImGui::IsKeyPressed(ImGuiKey_5)) g_ed.tool = Tool::Select;
-            if (ImGui::IsKeyPressed(ImGuiKey_6)) g_ed.tool = Tool::Eyedropper;
+            if (ImGui::IsKeyPressed(ImGuiKey_1) || ImGui::IsKeyPressed(ImGuiKey_P)) g_ed.tool = Tool::Paint;
+            if (ImGui::IsKeyPressed(ImGuiKey_2) || ImGui::IsKeyPressed(ImGuiKey_L)) g_ed.tool = Tool::Line;
+            if (ImGui::IsKeyPressed(ImGuiKey_3) || ImGui::IsKeyPressed(ImGuiKey_E)) g_ed.tool = Tool::Erase;
+            if (ImGui::IsKeyPressed(ImGuiKey_4) || ImGui::IsKeyPressed(ImGuiKey_R)) g_ed.tool = Tool::Rect;
+            if (ImGui::IsKeyPressed(ImGuiKey_5) || ImGui::IsKeyPressed(ImGuiKey_F)) g_ed.tool = Tool::Fill;
+            if (ImGui::IsKeyPressed(ImGuiKey_6) || ImGui::IsKeyPressed(ImGuiKey_S)) g_ed.tool = Tool::Select;
+            if (ImGui::IsKeyPressed(ImGuiKey_7) || ImGui::IsKeyPressed(ImGuiKey_I)) g_ed.tool = Tool::Eyedropper;
         }
 
         ImGui_ImplSDLRenderer3_NewFrame();
@@ -1281,6 +1487,9 @@ int run_editor() {
                 }
                 if (ImGui::MenuItem("Import Tileset…", "Ctrl+I")) {
                     open_tileset_dialog(renderer);
+                }
+                if (ImGui::MenuItem("Import Terrain / Variants…")) {
+                    open_terrain_dialog(renderer);
                 }
                 ImGui::Separator();
                 if (ImGui::MenuItem("Export All", "Ctrl+E")) {

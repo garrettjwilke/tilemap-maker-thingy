@@ -10,8 +10,11 @@ const MapCell TilemapDoc::kEmptyCell = MapCell{};
 
 namespace {
 float random_01() {
-    static thread_local std::mt19937 rng(1337);
-    static thread_local std::uniform_real_distribution<float> dist(0.0f, 1.0f);
+    static thread_local std::mt19937 rng([]() {
+        std::random_device rd;
+        return rd();
+    }());
+    static thread_local std::uniform_real_distribution<float> dist(0.0001f, 0.9999f);
     return dist(rng);
 }
 } // namespace
@@ -46,9 +49,14 @@ void TilemapDoc::set_cell(int x, int y, const MapCell& cell) {
 }
 
 void TilemapDoc::record_cell_internal(int x, int y) {
-    if (!stroke_in_progress_ || !in_bounds(x, y)) return;
-    for (const auto& ch : pending_changes_) {
-        if (ch.pos.x == x && ch.pos.y == y) return; // Already recorded old state
+    if (!stroke_in_progress_) return;
+    if (!in_bounds(x, y)) return;
+    const size_t idx = static_cast<size_t>(y * width + x);
+    if (idx < pending_recorded_.size() && pending_recorded_[idx]) {
+        return; // Already recorded old state
+    }
+    if (idx < pending_recorded_.size()) {
+        pending_recorded_[idx] = 1;
     }
     CellChange ch;
     ch.pos = {x, y};
@@ -66,6 +74,7 @@ void TilemapDoc::begin_stroke(const std::string& action_name) {
     current_action_.old_w = width;
     current_action_.old_h = height;
     pending_changes_.clear();
+    pending_recorded_.assign(static_cast<size_t>(width * height), 0);
 }
 
 void TilemapDoc::record_change(int x, int y) {
@@ -91,6 +100,7 @@ void TilemapDoc::end_stroke() {
         redo_stack_.clear();
     }
     pending_changes_.clear();
+    pending_recorded_.clear();
 }
 
 bool TilemapDoc::undo() {
@@ -193,6 +203,11 @@ void TilemapDoc::reroll_variants() {
             if (c.mode == TileMode::Terrain) {
                 record_cell_internal(x, y);
                 c.roll = random_01();
+            } else if (c.mode == TileMode::Stamp && (c.atlas_x == 9 && c.atlas_y == 2 || tileset.is_extra(c.atlas_x, c.atlas_y))) {
+                record_cell_internal(x, y);
+                const Cell chosen = tileset.resolve_variant(9, 2, random_01());
+                c.atlas_x = chosen.x;
+                c.atlas_y = chosen.y;
             }
         }
     }
@@ -239,6 +254,128 @@ void TilemapDoc::erase_cell(int x, int y, int brush_size) {
     mark_dirty();
 }
 
+void TilemapDoc::draw_line(int x0, int y0, int x1, int y1, TileMode mode, int stamp_col, int stamp_row, int brush_size) {
+    begin_stroke(mode == TileMode::Terrain ? "Draw Line Terrain" : "Draw Line Stamp");
+    brush_size = std::max(brush_size, 1);
+
+    const int dx = std::abs(x1 - x0);
+    const int dy = -std::abs(y1 - y0);
+    const int sx = (x0 < x1) ? 1 : -1;
+    const int sy = (y0 < y1) ? 1 : -1;
+    int err = dx + dy;
+    int x = x0;
+    int y = y0;
+
+    while (true) {
+        for (int by = 0; by < brush_size; ++by) {
+            for (int bx = 0; bx < brush_size; ++bx) {
+                const int cx = x + bx;
+                const int cy = y + by;
+                if (!in_bounds(cx, cy)) continue;
+                record_cell_internal(cx, cy);
+                MapCell& c = cells_[static_cast<size_t>(cy * width + cx)];
+                c.mode = mode;
+                if (mode == TileMode::Terrain) {
+                    if (c.roll == 0.0f) c.roll = random_01();
+                } else if (mode == TileMode::Stamp) {
+                    c.atlas_x = stamp_col;
+                    c.atlas_y = stamp_row;
+                } else {
+                    c = MapCell{};
+                }
+            }
+        }
+        if (x == x1 && y == y1) break;
+        const int e2 = 2 * err;
+        if (e2 >= dy) { err += dy; x += sx; }
+        if (e2 <= dx) { err += dx; y += sy; }
+    }
+
+    solve_all_autotiles();
+    end_stroke();
+    mark_dirty();
+}
+
+void TilemapDoc::erase_line(int x0, int y0, int x1, int y1, int brush_size) {
+    begin_stroke("Erase Line");
+    brush_size = std::max(brush_size, 1);
+
+    const int dx = std::abs(x1 - x0);
+    const int dy = -std::abs(y1 - y0);
+    const int sx = (x0 < x1) ? 1 : -1;
+    const int sy = (y0 < y1) ? 1 : -1;
+    int err = dx + dy;
+    int x = x0;
+    int y = y0;
+
+    while (true) {
+        for (int by = 0; by < brush_size; ++by) {
+            for (int bx = 0; bx < brush_size; ++bx) {
+                const int cx = x + bx;
+                const int cy = y + by;
+                if (!in_bounds(cx, cy)) continue;
+                record_cell_internal(cx, cy);
+                cells_[static_cast<size_t>(cy * width + cx)] = MapCell{};
+            }
+        }
+        if (x == x1 && y == y1) break;
+        const int e2 = 2 * err;
+        if (e2 >= dy) { err += dy; x += sx; }
+        if (e2 <= dx) { err += dx; y += sy; }
+    }
+
+    solve_all_autotiles();
+    end_stroke();
+    mark_dirty();
+}
+
+void TilemapDoc::outline_rect(const Rect& rect, TileMode mode, int stamp_col, int stamp_row, int brush_size) {
+    begin_stroke(mode == TileMode::Terrain ? "Outline Rect Terrain" : "Outline Rect Stamp");
+    brush_size = std::max(brush_size, 1);
+
+    for (int y = rect.y; y < rect.bottom(); ++y) {
+        for (int x = rect.x; x < rect.right(); ++x) {
+            if (!in_bounds(x, y)) continue;
+            const bool is_border = (x < rect.x + brush_size || x >= rect.right() - brush_size ||
+                                    y < rect.y + brush_size || y >= rect.bottom() - brush_size);
+            if (!is_border) continue;
+
+            record_cell_internal(x, y);
+            MapCell& c = cells_[static_cast<size_t>(y * width + x)];
+            c.mode = mode;
+            if (mode == TileMode::Terrain) {
+                c.roll = random_01();
+            } else if (mode == TileMode::Stamp) {
+                c.atlas_x = stamp_col;
+                c.atlas_y = stamp_row;
+            }
+        }
+    }
+    solve_all_autotiles();
+    end_stroke();
+    mark_dirty();
+}
+
+void TilemapDoc::erase_outline_rect(const Rect& rect, int brush_size) {
+    begin_stroke("Erase Outline Rect");
+    brush_size = std::max(brush_size, 1);
+
+    for (int y = rect.y; y < rect.bottom(); ++y) {
+        for (int x = rect.x; x < rect.right(); ++x) {
+            if (!in_bounds(x, y)) continue;
+            const bool is_border = (x < rect.x + brush_size || x >= rect.right() - brush_size ||
+                                    y < rect.y + brush_size || y >= rect.bottom() - brush_size);
+            if (!is_border) continue;
+
+            record_cell_internal(x, y);
+            cells_[static_cast<size_t>(y * width + x)] = MapCell{};
+        }
+    }
+    solve_all_autotiles();
+    end_stroke();
+    mark_dirty();
+}
+
 void TilemapDoc::fill_rect(const Rect& rect, TileMode mode, int stamp_col, int stamp_row) {
     begin_stroke(mode == TileMode::Terrain ? "Paint Rect Terrain" : "Paint Rect Stamp");
     for (int y = rect.y; y < rect.bottom(); ++y) {
@@ -279,9 +416,6 @@ void TilemapDoc::flood_fill(int start_x, int start_y, TileMode mode, int stamp_c
         if (mode == TileMode::Stamp && target_cell.atlas_x == stamp_col && target_cell.atlas_y == stamp_row) {
             return;
         }
-        if (mode == TileMode::Terrain) {
-            return;
-        }
     }
 
     begin_stroke("Flood Fill");
@@ -292,6 +426,9 @@ void TilemapDoc::flood_fill(int start_x, int start_y, TileMode mode, int stamp_c
     auto matches = [&](int x, int y) -> bool {
         if (!in_bounds(x, y)) return false;
         const MapCell& c = get_cell(x, y);
+        if (mode == TileMode::Terrain && target_cell.mode == TileMode::Terrain) {
+            return c.mode == TileMode::Terrain;
+        }
         if (c.mode != target_cell.mode) return false;
         if (target_cell.mode == TileMode::Stamp) {
             return c.atlas_x == target_cell.atlas_x && c.atlas_y == target_cell.atlas_y;

@@ -62,7 +62,10 @@ public:
     bool load_png_file(const std::string& path);
     bool load_png_raw(const std::string& path);
     bool load_terrain_file(const std::string& path);
+    bool load_header_file(const std::string& path);
+    bool import_variants_file(const std::string& path);
     void parse_terrain_text(const std::string& text, const std::string& path);
+    bool parse_c_header(const std::string& text, const std::string& path);
 
     // Helpers
     std::vector<VariantBinding> variants_for_root(int root_x, int root_y) const;

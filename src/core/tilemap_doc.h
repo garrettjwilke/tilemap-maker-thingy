@@ -75,8 +75,12 @@ public:
     // Drawing operations
     void paint_cell(int x, int y, TileMode mode, int stamp_col = -1, int stamp_row = -1, int brush_size = 1);
     void erase_cell(int x, int y, int brush_size = 1);
+    void draw_line(int x0, int y0, int x1, int y1, TileMode mode, int stamp_col = -1, int stamp_row = -1, int brush_size = 1);
+    void erase_line(int x0, int y0, int x1, int y1, int brush_size = 1);
     void fill_rect(const Rect& rect, TileMode mode, int stamp_col = -1, int stamp_row = -1);
+    void outline_rect(const Rect& rect, TileMode mode, int stamp_col = -1, int stamp_row = -1, int brush_size = 1);
     void erase_rect(const Rect& rect);
+    void erase_outline_rect(const Rect& rect, int brush_size = 1);
     void flood_fill(int x, int y, TileMode mode, int stamp_col = -1, int stamp_row = -1);
 
     // Clipboard & Selection
@@ -117,6 +121,7 @@ private:
     bool stroke_in_progress_ = false;
     UndoAction current_action_;
     std::vector<CellChange> pending_changes_;
+    std::vector<uint8_t> pending_recorded_;
     std::vector<UndoAction> undo_stack_;
     std::vector<UndoAction> redo_stack_;
     bool dirty_ = false;

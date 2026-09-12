@@ -52,6 +52,11 @@ std::string basename_of(const std::string& path) {
     return (dot == std::string::npos) ? file : file.substr(0, dot);
 }
 
+bool file_exists(const std::string& path) {
+    std::ifstream f(path);
+    return f.good();
+}
+
 bool read_text_file(const std::string& path, std::string& out) {
     std::ifstream f(path, std::ios::binary);
     if (!f.is_open()) return false;
@@ -151,6 +156,10 @@ bool Tileset::load_from_file(const std::string& path) {
     // Check if .terrain extension
     if (path.size() >= 8 && path.substr(path.size() - 8) == ".terrain") {
         return load_terrain_file(path);
+    }
+    // Check if .h extension
+    if (path.size() >= 2 && path.substr(path.size() - 2) == ".h") {
+        return load_header_file(path);
     }
     // Check if JSON file with terrain metadata
     if (path.size() >= 5 && path.substr(path.size() - 5) == ".json") {
@@ -266,32 +275,154 @@ void Tileset::parse_terrain_text(const std::string& text, const std::string& pat
     }
 }
 
+bool Tileset::parse_c_header(const std::string& text, const std::string& path) {
+    if (text.find("AtmVariantDef") == std::string::npos) return false;
+    auto arr_start = text.find("AtmVariantDef");
+    auto brace_open = text.find('{', arr_start);
+    if (brace_open == std::string::npos) return false;
+    auto brace_close = text.rfind('}');
+    if (brace_close == std::string::npos || brace_close <= brace_open) return false;
+
+    variants.clear();
+    terrain_path = path;
+
+    size_t pos = brace_open + 1;
+    while (pos < brace_close) {
+        auto entry_start = text.find('{', pos);
+        if (entry_start == std::string::npos || entry_start >= brace_close) break;
+        auto entry_end = text.find('}', entry_start);
+        if (entry_end == std::string::npos || entry_end > brace_close) break;
+
+        std::string block = text.substr(entry_start + 1, entry_end - entry_start - 1);
+        int ex = -1, ey = -1, rx = -1, ry = -1, wt = 100;
+        if (std::sscanf(block.c_str(), " %d , %d , %d , %d , %d", &ex, &ey, &rx, &ry, &wt) >= 4) {
+            if (ex >= 0 && ey >= 0 && rx >= 0 && ry >= 0 && (ex != 0 || ey != 0 || rx != 0 || ry != 0 || wt != 0)) {
+                VariantBinding b;
+                b.x = ex;
+                b.y = ey;
+                b.root_x = rx;
+                b.root_y = ry;
+                b.probability = std::max(0.01f, static_cast<float>(wt) / 100.0f);
+                variants.push_back(b);
+            }
+        }
+        pos = entry_end + 1;
+    }
+    return !variants.empty();
+}
+
+bool Tileset::load_header_file(const std::string& path) {
+    error.clear();
+    std::string text;
+    if (!read_text_file(path, text)) {
+        error = "Could not read header file: " + path;
+        return false;
+    }
+    if (!parse_c_header(text, path)) {
+        error = "No AtmVariantDef found in header file: " + path;
+        return false;
+    }
+    if (is_valid()) {
+        return true;
+    }
+    const std::string dir = dirname_of(path);
+    std::string stem = basename_of(path);
+    std::vector<std::string> png_candidates = {
+        (dir.empty() ? "" : (dir + "/")) + stem + ".png",
+        (dir.empty() ? "" : (dir + "/../assets/tilesets/")) + stem + ".png",
+        (dir.empty() ? "" : (dir + "/../../assets/tilesets/")) + stem + ".png"
+    };
+    for (const auto& cand : png_candidates) {
+        if (file_exists(cand)) {
+            if (load_png_raw(cand)) {
+                return true;
+            }
+        }
+    }
+    error = "Could not find matching PNG for header: " + path;
+    return false;
+}
+
+bool Tileset::import_variants_file(const std::string& path) {
+    error.clear();
+    std::string text;
+    if (!read_text_file(path, text)) {
+        error = "Could not read variant file: " + path;
+        return false;
+    }
+    if (parse_c_header(text, path)) {
+        return true;
+    }
+    if (text.find("\"variants\"") != std::string::npos || text.find("\"version\"") != std::string::npos) {
+        parse_terrain_text(text, path);
+        if (!variants.empty()) {
+            return true;
+        }
+    }
+    error = "No recognized variant definitions found in: " + path;
+    return false;
+}
+
 bool Tileset::load_png_file(const std::string& path) {
     if (!load_png_raw(path)) {
         return false;
     }
 
-    // Look for sibling .terrain, .terrain.json, or _terrain.json file
+    // Look for sibling or project .terrain, .h, or .json file
     const std::string dir = dirname_of(path);
     const std::string stem = basename_of(path);
-    const std::vector<std::string> candidates = {
+    std::vector<std::string> candidates = {
         (dir.empty() ? "" : (dir + "/")) + stem + ".terrain",
         (dir.empty() ? "" : (dir + "/")) + stem + ".terrain.json",
         (dir.empty() ? "" : (dir + "/")) + stem + "_terrain.json",
-        (dir.empty() ? "" : (dir + "/")) + stem + ".json"
+        (dir.empty() ? "" : (dir + "/")) + stem + ".json",
+        (dir.empty() ? "" : (dir + "/")) + stem + ".h"
     };
+    if (!dir.empty()) {
+        candidates.push_back(dir + "/../../res/" + stem + ".h");
+        candidates.push_back(dir + "/../res/" + stem + ".h");
+        candidates.push_back(dir + "/../../res/" + stem + ".terrain");
+        candidates.push_back(dir + "/../../res/" + stem + ".json");
+        candidates.push_back(dir + "/../../plugins/DynamicTilemap/engine/src/" + stem + ".h");
+        candidates.push_back(dir + "/../" + stem + ".h");
+        candidates.push_back(dir + "/../" + stem + ".terrain");
+        candidates.push_back(dir + "/../" + stem + ".json");
+    }
 
     bool found = false;
     for (const auto& cand : candidates) {
-        std::string terrain_text;
-        if (read_text_file(cand, terrain_text)) {
-            if (terrain_text.find("\"variants\"") != std::string::npos ||
-                terrain_text.find("\"tileset\"") != std::string::npos) {
-                parse_terrain_text(terrain_text, cand);
+        std::string file_text;
+        if (read_text_file(cand, file_text)) {
+            if (cand.size() >= 2 && cand.substr(cand.size() - 2) == ".h") {
+                if (parse_c_header(file_text, cand)) {
+                    found = true;
+                    break;
+                }
+            } else if (file_text.find("\"variants\"") != std::string::npos ||
+                       file_text.find("\"tileset\"") != std::string::npos) {
+                parse_terrain_text(file_text, cand);
                 found = true;
                 break;
             }
         }
+    }
+
+    // Auto-detection fallback: If cols > 12, extra columns are variations of center tile (9, 2)
+    if (!found && cols > kBaseCols) {
+        variants.clear();
+        for (int c = kBaseCols; c < cols; ++c) {
+            for (int r = 0; r < rows; ++r) {
+                VariantBinding b;
+                b.x = c;
+                b.y = r;
+                b.root_x = kDefaultCenterCol;
+                b.root_y = kDefaultCenterRow;
+                b.probability = 1.0f;
+                variants.push_back(b);
+            }
+        }
+        terrain_path = "[auto-detected extra columns]";
+        found = true;
     }
 
     if (!found) {
