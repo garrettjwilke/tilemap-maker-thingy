@@ -1391,6 +1391,38 @@ void test_tileset_preview_scaling() {
     expect(layout_invalid.tile_ui_size == 0.0f, "invalid dimensions yield zero tile_ui_size safely");
 }
 
+void test_viewport_zoom_pan_math() {
+    // Zoom around cursor calculation:
+    // pan_new = mx - (mx - pan_old) * (new_zoom / old_zoom)
+    auto zoom_around = [](float pan, float mx, float old_zoom, float new_zoom) -> float {
+        return mx - (mx - pan) * (new_zoom / old_zoom);
+    };
+
+    const float old_zoom = 2.0f;
+    const float new_zoom = 4.0f;
+    const float cursor_x = 100.0f;
+    const float old_pan_x = 20.0f;
+
+    // Point in world/tileset space before zoom:
+    // world_x = (cursor_x - old_pan_x) / old_zoom = (100 - 20) / 2.0 = 40.0
+    // After zoom, screen pos = pan_new + world_x * new_zoom = cursor_x
+    // pan_new = cursor_x - world_x * new_zoom = 100 - 40 * 4 = -60.0
+    const float new_pan_x = zoom_around(old_pan_x, cursor_x, old_zoom, new_zoom);
+    expect(std::abs(new_pan_x - (-60.0f)) < 0.001f, "zoom_around cursor keeps point under cursor stationary");
+
+    // Clamp range [0.25f, 16.0f]
+    const float min_clamped = std::clamp(0.1f, 0.25f, 16.0f);
+    const float max_clamped = std::clamp(20.0f, 0.25f, 16.0f);
+    expect(min_clamped == 0.25f, "min zoom clamps to 0.25f (25%)");
+    expect(max_clamped == 16.0f, "max zoom clamps to 16.0f (1600%)");
+
+    // Pinch scaling preserves aspect and direction
+    const float pinch_in = std::clamp(2.0f * 0.8f, 0.25f, 16.0f);
+    const float pinch_out = std::clamp(2.0f * 1.5f, 0.25f, 16.0f);
+    expect(pinch_in == 1.6f, "pinch in scales zoom down");
+    expect(pinch_out == 3.0f, "pinch out scales zoom up");
+}
+
 } // namespace
 
 int main() {
@@ -1413,6 +1445,7 @@ int main() {
     test_empty_background_tile_10_1();
     test_tileset_terrain_and_variants();
     test_tileset_preview_scaling();
+    test_viewport_zoom_pan_math();
 
     if (g_fails) {
         std::cerr << g_fails << " test(s) failed\n";

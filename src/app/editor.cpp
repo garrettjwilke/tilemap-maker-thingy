@@ -35,6 +35,8 @@ struct EditorState {
     float col_view_zoom = 3.0f;
     ImVec2 col_view_pan = ImVec2(40.0f, 40.0f);
     bool col_view_panning = false;
+    ImVec2 col_pan_drag_start = ImVec2(0, 0);
+    ImVec2 col_pan_start_offset = ImVec2(0, 0);
     Cell hovered_col_tile = {-1, -1};
     Cell last_col_painted = {-1, -1};
 
@@ -42,6 +44,8 @@ struct EditorState {
     float terrain_view_zoom = 3.0f;
     ImVec2 terrain_view_pan = ImVec2(40.0f, 40.0f);
     bool terrain_view_panning = false;
+    ImVec2 terrain_pan_drag_start = ImVec2(0, 0);
+    ImVec2 terrain_pan_start_offset = ImVec2(0, 0);
     Cell selected_terrain_tile = {Tileset::kDefaultCenterCol, Tileset::kDefaultCenterRow};
     Cell hovered_terrain_tile = {-1, -1};
     float terrain_variant_prob = 0.30f;
@@ -829,7 +833,7 @@ static void draw_top_nav_and_view_row() {
     } else if (g_ed.view_mode == EditorViewMode::TilesetCollision) {
         // Collision Mode View Controls
         if (ImGui::Button("-##ColZoomOut")) {
-            g_ed.col_view_zoom = std::max(0.5f, g_ed.col_view_zoom / 1.25f);
+            g_ed.col_view_zoom = std::max(0.25f, g_ed.col_view_zoom / 1.25f);
         }
         ImGui::SameLine();
         ImGui::Text("%.0f%%", g_ed.col_view_zoom * 100.0f);
@@ -845,7 +849,7 @@ static void draw_top_nav_and_view_row() {
     } else {
         // Terrain Mode View Controls
         if (ImGui::Button("-##TerrZoomOut")) {
-            g_ed.terrain_view_zoom = std::max(0.5f, g_ed.terrain_view_zoom / 1.25f);
+            g_ed.terrain_view_zoom = std::max(0.25f, g_ed.terrain_view_zoom / 1.25f);
         }
         ImGui::SameLine();
         ImGui::Text("%.0f%%", g_ed.terrain_view_zoom * 100.0f);
@@ -1372,32 +1376,69 @@ static void draw_tileset_collision_viewport() {
 
     ImGui::InvisibleButton("TilesetCollisionCanvas", canvas_sz,
                            ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight | ImGuiButtonFlags_MouseButtonMiddle);
-    const bool is_hovered = ImGui::IsItemHovered();
+    const bool is_hovered = ImGui::IsItemHovered() || ImGui::IsWindowHovered();
 
-    // Mouse wheel zoom
-    if (is_hovered && io.MouseWheel != 0.0f) {
-        const float old_zoom = g_ed.col_view_zoom;
-        const float factor = (io.MouseWheel > 0.0f) ? 1.25f : (1.0f / 1.25f);
-        const float new_zoom = std::clamp(old_zoom * factor, 0.5f, 16.0f);
-
-        const float mouse_rel_x = io.MousePos.x - (canvas_p0.x + g_ed.col_view_pan.x);
-        const float mouse_rel_y = io.MousePos.y - (canvas_p0.y + g_ed.col_view_pan.y);
-        g_ed.col_view_pan.x += mouse_rel_x * (1.0f - new_zoom / old_zoom);
-        g_ed.col_view_pan.y += mouse_rel_y * (1.0f - new_zoom / old_zoom);
-        g_ed.col_view_zoom = new_zoom;
-    }
-
-    // Panning with Middle Click or Space + Left Click
+    // Pan with middle mouse or space+drag
     const bool space_down = ImGui::IsKeyDown(ImGuiKey_Space);
     if (is_hovered && (ImGui::IsMouseClicked(ImGuiMouseButton_Middle) || (space_down && ImGui::IsMouseClicked(ImGuiMouseButton_Left)))) {
         g_ed.col_view_panning = true;
+        g_ed.col_pan_drag_start = io.MousePos;
+        g_ed.col_pan_start_offset = g_ed.col_view_pan;
     }
     if (g_ed.col_view_panning) {
         if (ImGui::IsMouseDown(ImGuiMouseButton_Middle) || (space_down && ImGui::IsMouseDown(ImGuiMouseButton_Left))) {
-            g_ed.col_view_pan.x += io.MouseDelta.x;
-            g_ed.col_view_pan.y += io.MouseDelta.y;
+            g_ed.col_view_pan.x = g_ed.col_pan_start_offset.x + (io.MousePos.x - g_ed.col_pan_drag_start.x);
+            g_ed.col_view_pan.y = g_ed.col_pan_start_offset.y + (io.MousePos.y - g_ed.col_pan_drag_start.y);
         } else {
             g_ed.col_view_panning = false;
+        }
+    }
+
+    // 1. Pinch gesture zoom (e.g. macOS trackpad pinch-to-zoom)
+    if (g_ed.has_pinch && g_ed.pinch_scale > 0.0f) {
+        const float old_zoom = g_ed.col_view_zoom;
+        g_ed.col_view_zoom = std::clamp(g_ed.col_view_zoom * g_ed.pinch_scale, 0.25f, 16.0f);
+        float mx = io.MousePos.x - canvas_p0.x;
+        float my = io.MousePos.y - canvas_p0.y;
+        if (mx < 0.0f || mx > canvas_sz.x || my < 0.0f || my > canvas_sz.y) {
+            mx = canvas_sz.x * 0.5f;
+            my = canvas_sz.y * 0.5f;
+        }
+        g_ed.col_view_pan.x = mx - (mx - g_ed.col_view_pan.x) * (g_ed.col_view_zoom / old_zoom);
+        g_ed.col_view_pan.y = my - (my - g_ed.col_view_pan.y) * (g_ed.col_view_zoom / old_zoom);
+        g_ed.has_pinch = false;
+        g_ed.pinch_scale = 1.0f;
+    }
+
+    // 2. Trackpad & Mouse Wheel navigation (scroll to pan, Cmd/Ctrl+scroll to zoom)
+    const bool is_painting_col = (io.MouseDown[ImGuiMouseButton_Left] || io.MouseDown[ImGuiMouseButton_Right]) && !space_down;
+    if (is_hovered && !is_painting_col) {
+        const bool cmd_or_ctrl = io.KeyCtrl || io.KeySuper;
+        if (cmd_or_ctrl) {
+            // Cmd/Ctrl + Wheel: Zoom around mouse cursor
+            if (io.MouseWheel != 0.0f) {
+                const float old_zoom = g_ed.col_view_zoom;
+                const float factor = (io.MouseWheel > 0.0f) ? 1.15f : (1.0f / 1.15f);
+                g_ed.col_view_zoom = std::clamp(g_ed.col_view_zoom * factor, 0.25f, 16.0f);
+
+                const float mx = io.MousePos.x - canvas_p0.x;
+                const float my = io.MousePos.y - canvas_p0.y;
+                g_ed.col_view_pan.x = mx - (mx - g_ed.col_view_pan.x) * (g_ed.col_view_zoom / old_zoom);
+                g_ed.col_view_pan.y = my - (my - g_ed.col_view_pan.y) * (g_ed.col_view_zoom / old_zoom);
+            }
+        } else {
+            // Normal Scroll: Pan canvas horizontally and vertically
+            float scroll_dx = io.MouseWheelH;
+            float scroll_dy = io.MouseWheel;
+            if (io.MouseWheelRequestAxisSwap || (io.KeyShift && scroll_dx == 0.0f)) {
+                scroll_dx = scroll_dy;
+                scroll_dy = 0.0f;
+            }
+            if (scroll_dx != 0.0f || scroll_dy != 0.0f) {
+                const float scroll_speed = 28.0f;
+                g_ed.col_view_pan.x += scroll_dx * scroll_speed;
+                g_ed.col_view_pan.y += scroll_dy * scroll_speed;
+            }
         }
     }
 
@@ -1585,32 +1626,68 @@ static void draw_tileset_terrain_viewport() {
 
     ImGui::InvisibleButton("TilesetTerrainCanvas", canvas_sz,
                            ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight | ImGuiButtonFlags_MouseButtonMiddle);
-    const bool is_hovered = ImGui::IsItemHovered();
+    const bool is_hovered = ImGui::IsItemHovered() || ImGui::IsWindowHovered();
 
-    // Mouse wheel zoom
-    if (is_hovered && io.MouseWheel != 0.0f) {
-        const float old_zoom = g_ed.terrain_view_zoom;
-        const float factor = (io.MouseWheel > 0.0f) ? 1.25f : (1.0f / 1.25f);
-        const float new_zoom = std::clamp(old_zoom * factor, 0.5f, 16.0f);
-
-        const float mouse_rel_x = io.MousePos.x - (canvas_p0.x + g_ed.terrain_view_pan.x);
-        const float mouse_rel_y = io.MousePos.y - (canvas_p0.y + g_ed.terrain_view_pan.y);
-        g_ed.terrain_view_pan.x += mouse_rel_x * (1.0f - new_zoom / old_zoom);
-        g_ed.terrain_view_pan.y += mouse_rel_y * (1.0f - new_zoom / old_zoom);
-        g_ed.terrain_view_zoom = new_zoom;
-    }
-
-    // Panning with Middle Click or Space + Left Click
+    // Pan with middle mouse or space+drag
     const bool space_down = ImGui::IsKeyDown(ImGuiKey_Space);
     if (is_hovered && (ImGui::IsMouseClicked(ImGuiMouseButton_Middle) || (space_down && ImGui::IsMouseClicked(ImGuiMouseButton_Left)))) {
         g_ed.terrain_view_panning = true;
+        g_ed.terrain_pan_drag_start = io.MousePos;
+        g_ed.terrain_pan_start_offset = g_ed.terrain_view_pan;
     }
     if (g_ed.terrain_view_panning) {
         if (ImGui::IsMouseDown(ImGuiMouseButton_Middle) || (space_down && ImGui::IsMouseDown(ImGuiMouseButton_Left))) {
-            g_ed.terrain_view_pan.x += io.MouseDelta.x;
-            g_ed.terrain_view_pan.y += io.MouseDelta.y;
+            g_ed.terrain_view_pan.x = g_ed.terrain_pan_start_offset.x + (io.MousePos.x - g_ed.terrain_pan_drag_start.x);
+            g_ed.terrain_view_pan.y = g_ed.terrain_pan_start_offset.y + (io.MousePos.y - g_ed.terrain_pan_drag_start.y);
         } else {
             g_ed.terrain_view_panning = false;
+        }
+    }
+
+    // 1. Pinch gesture zoom (e.g. macOS trackpad pinch-to-zoom)
+    if (g_ed.has_pinch && g_ed.pinch_scale > 0.0f) {
+        const float old_zoom = g_ed.terrain_view_zoom;
+        g_ed.terrain_view_zoom = std::clamp(g_ed.terrain_view_zoom * g_ed.pinch_scale, 0.25f, 16.0f);
+        float mx = io.MousePos.x - canvas_p0.x;
+        float my = io.MousePos.y - canvas_p0.y;
+        if (mx < 0.0f || mx > canvas_sz.x || my < 0.0f || my > canvas_sz.y) {
+            mx = canvas_sz.x * 0.5f;
+            my = canvas_sz.y * 0.5f;
+        }
+        g_ed.terrain_view_pan.x = mx - (mx - g_ed.terrain_view_pan.x) * (g_ed.terrain_view_zoom / old_zoom);
+        g_ed.terrain_view_pan.y = my - (my - g_ed.terrain_view_pan.y) * (g_ed.terrain_view_zoom / old_zoom);
+        g_ed.has_pinch = false;
+        g_ed.pinch_scale = 1.0f;
+    }
+
+    // 2. Trackpad & Mouse Wheel navigation (scroll to pan, Cmd/Ctrl+scroll to zoom)
+    if (is_hovered) {
+        const bool cmd_or_ctrl = io.KeyCtrl || io.KeySuper;
+        if (cmd_or_ctrl) {
+            // Cmd/Ctrl + Wheel: Zoom around mouse cursor
+            if (io.MouseWheel != 0.0f) {
+                const float old_zoom = g_ed.terrain_view_zoom;
+                const float factor = (io.MouseWheel > 0.0f) ? 1.15f : (1.0f / 1.15f);
+                g_ed.terrain_view_zoom = std::clamp(g_ed.terrain_view_zoom * factor, 0.25f, 16.0f);
+
+                const float mx = io.MousePos.x - canvas_p0.x;
+                const float my = io.MousePos.y - canvas_p0.y;
+                g_ed.terrain_view_pan.x = mx - (mx - g_ed.terrain_view_pan.x) * (g_ed.terrain_view_zoom / old_zoom);
+                g_ed.terrain_view_pan.y = my - (my - g_ed.terrain_view_pan.y) * (g_ed.terrain_view_zoom / old_zoom);
+            }
+        } else {
+            // Normal Scroll: Pan canvas horizontally and vertically
+            float scroll_dx = io.MouseWheelH;
+            float scroll_dy = io.MouseWheel;
+            if (io.MouseWheelRequestAxisSwap || (io.KeyShift && scroll_dx == 0.0f)) {
+                scroll_dx = scroll_dy;
+                scroll_dy = 0.0f;
+            }
+            if (scroll_dx != 0.0f || scroll_dy != 0.0f) {
+                const float scroll_speed = 28.0f;
+                g_ed.terrain_view_pan.x += scroll_dx * scroll_speed;
+                g_ed.terrain_view_pan.y += scroll_dy * scroll_speed;
+            }
         }
     }
 
