@@ -28,6 +28,7 @@ fi
 echo "Using Emscripten: $(emcc -v 2>&1 | head -n 1)"
 
 BUILD_DIR="$PROJECT_ROOT/build-wasm"
+DIST_DIR="${DIST_DIR:-$PROJECT_ROOT/dist-wasm}"
 
 # Configure with CMake
 echo "Configuring CMake in $BUILD_DIR..."
@@ -39,10 +40,22 @@ emcmake cmake -B "$BUILD_DIR" -S "$PROJECT_ROOT" \
 echo "Compiling..."
 cmake --build "$BUILD_DIR" --parallel
 
+# Stage clean web distribution
+echo "Staging clean web files to $DIST_DIR..."
+mkdir -p "$DIST_DIR"
+rm -rf "$DIST_DIR"/*
+cp "$BUILD_DIR"/dist/* "$DIST_DIR/"
+
 echo ""
 echo "=== Build Complete! ==="
-echo "Output files in $BUILD_DIR:"
-ls -lh "$BUILD_DIR"/tilemap-maker.* 2>/dev/null || true
+echo "Clean web distribution ready for rsync in:"
+echo "  $DIST_DIR"
+echo "  (Also available at $BUILD_DIR/dist)"
 echo ""
-echo "To run locally, execute:"
+ls -lh "$DIST_DIR"
+echo ""
+echo "Example rsync command:"
+echo "  rsync -avz dist-wasm/ user@your-server:/path/to/webroot/"
+echo ""
+echo "To test locally, run:"
 echo "  ./scripts/serve-wasm.sh"

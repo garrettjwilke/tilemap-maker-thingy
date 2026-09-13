@@ -123,10 +123,7 @@ jobs:
       - name: Prepare WASM artifacts
         run: |
           mkdir -p dist-wasm
-          cp build-wasm/tilemap-maker.html dist-wasm/
-          cp build-wasm/tilemap-maker.js dist-wasm/
-          cp build-wasm/tilemap-maker.wasm dist-wasm/
-          cp build-wasm/index.html dist-wasm/
+          cp build-wasm/dist/* dist-wasm/
 
       - name: Upload WASM artifacts
         uses: actions/upload-artifact@v4

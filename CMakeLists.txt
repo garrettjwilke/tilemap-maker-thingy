@@ -130,6 +130,20 @@ if(EMSCRIPTEN)
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             ${CMAKE_CURRENT_SOURCE_DIR}/src/wasm/shell.html
             ${CMAKE_CURRENT_BINARY_DIR}/index.html
-        COMMENT "Generating HTML shell for tilemap-maker"
+        COMMAND ${CMAKE_COMMAND} -E make_directory
+            ${CMAKE_CURRENT_BINARY_DIR}/dist
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/wasm/shell.html
+            ${CMAKE_CURRENT_BINARY_DIR}/dist/index.html
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/wasm/shell.html
+            ${CMAKE_CURRENT_BINARY_DIR}/dist/tilemap-maker.html
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            ${CMAKE_CURRENT_BINARY_DIR}/tilemap-maker.js
+            ${CMAKE_CURRENT_BINARY_DIR}/dist/tilemap-maker.js
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            ${CMAKE_CURRENT_BINARY_DIR}/tilemap-maker.wasm
+            ${CMAKE_CURRENT_BINARY_DIR}/dist/tilemap-maker.wasm
+        COMMENT "Staging clean web distribution files in dist/"
     )
 endif()
