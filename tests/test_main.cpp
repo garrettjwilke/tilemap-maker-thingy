@@ -1348,6 +1348,49 @@ void test_tileset_terrain_and_variants() {
     std::remove(ts_doc_png.c_str());
 }
 
+void test_tileset_preview_scaling() {
+    using namespace tmm;
+
+    // 1. Resizing sidebar changes preview tile scale (smaller when narrow, larger when wide)
+    const float avail_sidebar_h = 700.0f;
+    const int cols = 12;
+    const int rows = 4;
+
+    const TilesetPreviewLayout layout_narrow = compute_tileset_preview_layout(280.0f, avail_sidebar_h, cols, rows);
+    const TilesetPreviewLayout layout_standard = compute_tileset_preview_layout(360.0f, avail_sidebar_h, cols, rows);
+    const TilesetPreviewLayout layout_wide = compute_tileset_preview_layout(620.0f, avail_sidebar_h, cols, rows);
+
+    expect(layout_standard.tile_ui_size > layout_narrow.tile_ui_size, "standard sidebar tile size > narrow sidebar");
+    expect(layout_wide.tile_ui_size > layout_standard.tile_ui_size, "wide sidebar tile size > standard sidebar");
+
+    // 2. Preview always fills the available horizontal space
+    // inner_w = outer_w - 2 * border(1) - 2 * pad_x(4) = outer_w - 10
+    const float expected_inner_w = 360.0f - 10.0f;
+    expect(std::fabs(layout_standard.total_w - expected_inner_w) < 0.001f, "preview fills horizontal space available exactly");
+
+    // 3. Aspect ratio preservation (12x4 tileset: height is roughly 1/3 of width)
+    expect(layout_standard.total_h < layout_standard.total_w * 0.5f, "12x4 tileset total_h proportional to aspect ratio");
+    expect(!layout_standard.needs_vscroll, "12x4 tileset does not need vertical scroll");
+    expect(layout_standard.child_h == layout_standard.total_h + 10.0f, "child_h fits content tightly with no blank space");
+
+    // 4. Large tileset like untitled.png (30 cols x 20 rows)
+    const TilesetPreviewLayout layout_30x20 = compute_tileset_preview_layout(360.0f, avail_sidebar_h, 30, 20);
+    expect(std::fabs(layout_30x20.total_w - expected_inner_w) < 0.001f, "30x20 tileset fills available width");
+    expect(!layout_30x20.needs_vscroll, "30x20 tileset fits without vertical scrolling in normal window");
+
+    // 5. Extremely tall tileset caps child_h and enables vertical scrolling
+    const TilesetPreviewLayout layout_tall = compute_tileset_preview_layout(360.0f, avail_sidebar_h, 16, 64);
+    expect(layout_tall.needs_vscroll, "extremely tall tileset enables vertical scrolling");
+    expect(layout_tall.child_h <= 420.0f, "extremely tall tileset child_h is capped");
+    // With scrollbar enabled, total_w fills the remaining width next to scrollbar
+    const float expected_inner_with_vscroll = expected_inner_w - 14.0f;
+    expect(std::fabs(layout_tall.total_w - expected_inner_with_vscroll) < 0.001f, "tall tileset fills width next to scrollbar");
+
+    // 6. Zero / invalid dimensions do not crash or divide by zero
+    const TilesetPreviewLayout layout_invalid = compute_tileset_preview_layout(0.0f, avail_sidebar_h, 0, 0);
+    expect(layout_invalid.tile_ui_size == 0.0f, "invalid dimensions yield zero tile_ui_size safely");
+}
+
 } // namespace
 
 int main() {
@@ -1369,6 +1412,7 @@ int main() {
     test_buffer_and_outside_zone();
     test_empty_background_tile_10_1();
     test_tileset_terrain_and_variants();
+    test_tileset_preview_scaling();
 
     if (g_fails) {
         std::cerr << g_fails << " test(s) failed\n";

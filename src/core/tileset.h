@@ -2,10 +2,58 @@
 
 #include "types.h"
 
+#include <algorithm>
 #include <string>
 #include <vector>
 
 namespace tmm {
+
+struct TilesetPreviewLayout {
+    float tile_ui_size = 0.0f;
+    float total_w = 0.0f;
+    float total_h = 0.0f;
+    float child_h = 0.0f;
+    bool needs_vscroll = false;
+};
+
+inline TilesetPreviewLayout compute_tileset_preview_layout(
+    float outer_w, float avail_sidebar_h,
+    int cols, int rows,
+    float spacing = 1.0f,
+    float pad_x = 4.0f, float pad_y = 4.0f,
+    float border_size = 1.0f,
+    float scrollbar_size = 14.0f)
+{
+    TilesetPreviewLayout layout{};
+    if (cols <= 0 || rows <= 0 || outer_w <= 0.0f) {
+        return layout;
+    }
+    const float total_gaps_x = (cols > 1) ? static_cast<float>(cols - 1) * spacing : 0.0f;
+    const float total_gaps_y = (rows > 1) ? static_cast<float>(rows - 1) * spacing : 0.0f;
+
+    float inner_w = std::max(1.0f, outer_w - (border_size * 2.0f + pad_x * 2.0f));
+    float tile_ui_size = std::max(1.0f, (inner_w - total_gaps_x) / static_cast<float>(cols));
+    float total_h = static_cast<float>(rows) * tile_ui_size + total_gaps_y;
+    const float content_h = total_h + (border_size * 2.0f + pad_y * 2.0f);
+
+    const float max_child_h = std::max(180.0f, std::min(420.0f, avail_sidebar_h - 140.0f));
+    float child_h = content_h;
+    bool needs_vscroll = false;
+    if (content_h > max_child_h) {
+        needs_vscroll = true;
+        child_h = max_child_h;
+        inner_w = std::max(1.0f, inner_w - scrollbar_size);
+        tile_ui_size = std::max(1.0f, (inner_w - total_gaps_x) / static_cast<float>(cols));
+        total_h = static_cast<float>(rows) * tile_ui_size + total_gaps_y;
+    }
+
+    layout.tile_ui_size = tile_ui_size;
+    layout.total_w = cols * tile_ui_size + total_gaps_x;
+    layout.total_h = total_h;
+    layout.child_h = child_h;
+    layout.needs_vscroll = needs_vscroll;
+    return layout;
+}
 
 struct VariantBinding {
     int x = 0;
