@@ -13,12 +13,12 @@ enum class TileMode { Empty, Stamp, Terrain };
 
 struct MapCell {
     TileMode mode = TileMode::Empty;
-    int atlas_x = -1;
-    int atlas_y = -1;
+    int atlas_x = 10;
+    int atlas_y = 1;
     float roll = 0.0f; // Random roll [0, 1) for variant resolution
 
     bool is_empty() const {
-        return mode == TileMode::Empty || atlas_x < 0 || atlas_y < 0;
+        return mode == TileMode::Empty || (atlas_x == 10 && atlas_y == 1) || atlas_x < 0 || atlas_y < 0;
     }
 };
 

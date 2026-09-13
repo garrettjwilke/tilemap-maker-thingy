@@ -1153,6 +1153,72 @@ void test_buffer_and_outside_zone() {
     doc.clear_cells();
     expect(doc.get_cell(0, 0).is_empty(), "active cell cleared");
     expect(doc.get_cell(-1, -1).is_empty(), "buffer cell cleared");
+    expect(doc.get_cell(0, 0).atlas_x == 10 && doc.get_cell(0, 0).atlas_y == 1,
+           "cleared active cell is reset to tile (10, 1)");
+    expect(doc.get_cell(-1, -1).atlas_x == 10 && doc.get_cell(-1, -1).atlas_y == 1,
+           "cleared buffer cell is reset to tile (10, 1)");
+}
+
+void test_empty_background_tile_10_1() {
+    using namespace tmm;
+
+    // 1. Newly constructed doc fills entire drawing area (active + buffer) with tile (10, 1)
+    TilemapDoc doc(20, 14, 16);
+    for (int y = -doc.buffer; y < doc.height + doc.buffer; ++y) {
+        for (int x = -doc.buffer; x < doc.width + doc.buffer; ++x) {
+            const MapCell& c = doc.get_cell(x, y);
+            expect(c.is_empty(), "initial cell must be empty");
+            expect(c.atlas_x == 10 && c.atlas_y == 1, "initial cell must have atlas coords (10, 1)");
+        }
+    }
+
+    // 2. Tile (10, 1) is strictly and always empty / no collision
+    expect(doc.tileset.get_tile_collision(10, 1) == 0, "(10, 1) must be 0 collision by default");
+    doc.tileset.set_tile_collision(10, 1, 4);
+    expect(doc.tileset.get_tile_collision(10, 1) == 0, "(10, 1) collision must remain 0 after set_tile_collision");
+    doc.tileset.init_tile_collisions(1);
+    expect(doc.tileset.get_tile_collision(10, 1) == 0, "(10, 1) collision must remain 0 after init_tile_collisions(1)");
+    doc.tileset.init_tile_collisions(0);
+    expect(doc.tileset.get_tile_collision(10, 1) == 0, "(10, 1) collision must remain 0 after init_tile_collisions(0)");
+
+    // 3. Collision grid generation produces zero collisions for empty map filled with (10, 1)
+    CollisionGrid cg = doc.build_collision_grid();
+    expect(cg.count_types_used() == 0, "empty map filled with (10, 1) must have zero collisions");
+
+    // 4. Erasing tiles sets them back to tile (10, 1)
+    doc.paint_cell(5, 5, TileMode::Stamp, 3, 2, 1);
+    expect(!doc.get_cell(5, 5).is_empty(), "cell painted with stamp");
+    expect(doc.get_cell(5, 5).atlas_x == 3 && doc.get_cell(5, 5).atlas_y == 2, "painted coords (3, 2)");
+
+    doc.erase_cell(5, 5, 1);
+    expect(doc.get_cell(5, 5).is_empty(), "erased cell must be empty");
+    expect(doc.get_cell(5, 5).atlas_x == 10 && doc.get_cell(5, 5).atlas_y == 1,
+           "erased cell must be reset to tile (10, 1)");
+
+    // Erase rect
+    doc.fill_rect({2, 2, 4, 4}, TileMode::Stamp, 6, 2);
+    expect(!doc.get_cell(3, 3).is_empty(), "rect filled cell");
+    doc.erase_rect({2, 2, 4, 4});
+    expect(doc.get_cell(3, 3).is_empty(), "rect erased cell must be empty");
+    expect(doc.get_cell(3, 3).atlas_x == 10 && doc.get_cell(3, 3).atlas_y == 1,
+           "rect erased cell must be tile (10, 1)");
+
+    // 5. Exported composite PNG blits tile (10, 1) into empty cells
+    const std::string ts_path = temp_path("test_10_1_ts.png");
+    expect(create_dummy_tileset_png(ts_path, 16), "create dummy tileset");
+    expect(doc.tileset.load_from_file(ts_path), "load dummy tileset");
+
+    const std::string out_png = temp_path("test_10_1_out.png");
+    expect(export_composite_png(doc, out_png).empty(), "export composite png");
+
+    Image im{};
+    expect(load_png(out_png.c_str(), &im), "load exported image");
+    expect(im.w == 320 && im.h == 224, "correct image dimensions");
+    // Verify pixels were written (create_dummy_tileset_png writes index 1 into pixels)
+    expect(im.px[0] == 1, "pixels from tileset tile (10, 1) were blitted to composite image");
+    image_free(&im);
+    std::remove(out_png.c_str());
+    std::remove(ts_path.c_str());
 }
 
 } // namespace
@@ -1174,6 +1240,7 @@ int main() {
     test_circle_mode_and_clipping();
     test_default_size_and_8px_dimensions();
     test_buffer_and_outside_zone();
+    test_empty_background_tile_10_1();
 
     if (g_fails) {
         std::cerr << g_fails << " test(s) failed\n";

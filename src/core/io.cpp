@@ -97,13 +97,20 @@ std::string export_composite_png(const TilemapDoc& doc, const std::string& path)
     for (int cy = 0; cy < doc.height; ++cy) {
         for (int cx = 0; cx < doc.width; ++cx) {
             const MapCell& cell = doc.get_cell(cx, cy);
-            if (cell.is_empty()) continue;
-            for (int py = 0; py < ts; ++py) {
-                for (int px = 0; px < ts; ++px) {
-                    const uint8_t idx = doc.tileset.get_pixel(cell.atlas_x, cell.atlas_y, px, py);
-                    const int dest_x = cx * ts + px;
-                    const int dest_y = cy * ts + py;
-                    im.px[dest_y * out_w + dest_x] = idx;
+            int ax = cell.atlas_x;
+            int ay = cell.atlas_y;
+            if (cell.mode == TileMode::Empty || ax < 0 || ay < 0) {
+                ax = 10;
+                ay = 1;
+            }
+            if (doc.tileset.in_bounds(ax, ay)) {
+                for (int py = 0; py < ts; ++py) {
+                    for (int px = 0; px < ts; ++px) {
+                        const uint8_t idx = doc.tileset.get_pixel(ax, ay, px, py);
+                        const int dest_x = cx * ts + px;
+                        const int dest_y = cy * ts + py;
+                        im.px[dest_y * out_w + dest_x] = idx;
+                    }
                 }
             }
         }
@@ -340,6 +347,9 @@ std::string load_map_json(TilemapDoc& doc, const std::string& path) {
             }
             if (!cols_arr.empty()) {
                 doc.tileset.tile_collisions = std::move(cols_arr);
+                if (doc.tileset.in_bounds(10, 1)) {
+                    doc.tileset.tile_collisions[static_cast<size_t>(1 * doc.tileset.cols + 10)] = 0;
+                }
             }
         }
     }

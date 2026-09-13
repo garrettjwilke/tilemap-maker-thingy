@@ -47,13 +47,7 @@ public:
 
     uint8_t get_tile_collision(int col, int row) const {
         if (col < 0 || row < 0 || col >= cols || row >= rows) return 0;
-        if (col == 10 && row == 1) {
-            const size_t idx = static_cast<size_t>(row * cols + col);
-            if (idx < tile_collisions.size()) {
-                return tile_collisions[idx];
-            }
-            return 0; // (10, 1) is always empty in standard autotiles
-        }
+        if (col == 10 && row == 1) return 0; // (10, 1) is always empty / no collision
         const size_t idx = static_cast<size_t>(row * cols + col);
         if (idx < tile_collisions.size()) {
             return tile_collisions[idx];
@@ -62,6 +56,7 @@ public:
     }
 
     void set_tile_collision(int col, int row, uint8_t type) {
+        if (col == 10 && row == 1) return; // (10, 1) is always empty / no collision
         if (col >= 0 && row >= 0 && col < cols && row < rows) {
             const size_t idx = static_cast<size_t>(row * cols + col);
             if (tile_collisions.size() < static_cast<size_t>(cols * rows)) {
@@ -73,7 +68,7 @@ public:
 
     void init_tile_collisions(uint8_t default_type = 1) {
         tile_collisions.assign(static_cast<size_t>(cols * rows), default_type);
-        if (default_type != 0 && in_bounds(10, 1)) {
+        if (in_bounds(10, 1)) {
             tile_collisions[static_cast<size_t>(1 * cols + 10)] = 0;
         }
     }

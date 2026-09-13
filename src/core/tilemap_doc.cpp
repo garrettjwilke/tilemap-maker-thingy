@@ -581,8 +581,14 @@ void TilemapDoc::flood_fill(int start_x, int start_y, TileMode mode, int stamp_c
     if (!in_bounds(start_x, start_y)) return;
     if (!in_clip(start_x, start_y)) return;
     const MapCell target_cell = get_cell(start_x, start_y);
+    if (target_cell.is_empty() && (mode == TileMode::Empty || (mode == TileMode::Stamp && stamp_col == 10 && stamp_row == 1))) {
+        return;
+    }
     if (mode == target_cell.mode) {
         if (mode == TileMode::Stamp && target_cell.atlas_x == stamp_col && target_cell.atlas_y == stamp_row) {
+            return;
+        }
+        if (mode == TileMode::Empty) {
             return;
         }
     }
@@ -596,6 +602,9 @@ void TilemapDoc::flood_fill(int start_x, int start_y, TileMode mode, int stamp_c
         if (!in_bounds(x, y)) return false;
         if (!in_clip(x, y)) return false;
         const MapCell& c = get_cell(x, y);
+        if (target_cell.is_empty()) {
+            return c.is_empty();
+        }
         if (mode == TileMode::Terrain && target_cell.mode == TileMode::Terrain) {
             return c.mode == TileMode::Terrain;
         }

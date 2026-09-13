@@ -1404,8 +1404,12 @@ static void draw_tileset_collision_viewport() {
         const CollisionType* act = g_ed.doc.get_collision_type(g_ed.active_collision_type);
         const std::string act_name = (g_ed.active_collision_type == 0) ? "None" : (act ? act->name : "Type " + std::to_string(g_ed.active_collision_type));
 
-        ImGui::SetTooltip("Tile (%d, %d)\nCollision: %s\nLeft-click: set %s\nRight-click: clear (None)",
-                          hc, hr, cur_name.c_str(), act_name.c_str());
+        if (hc == 10 && hr == 1) {
+            ImGui::SetTooltip("Tile (10, 1) [Empty / Background]\nCollision: None (Always empty / no collision)");
+        } else {
+            ImGui::SetTooltip("Tile (%d, %d)\nCollision: %s\nLeft-click: set %s\nRight-click: clear (None)",
+                              hc, hr, cur_name.c_str(), act_name.c_str());
+        }
 
         if (io.MouseDown[ImGuiMouseButton_Left] && !space_down && !io.KeyCtrl) {
             const int prev_x = (g_ed.last_col_painted.x >= 0) ? g_ed.last_col_painted.x : hc;
@@ -1556,7 +1560,6 @@ static void draw_canvas_viewport_content() {
     for (int cy = -g_ed.doc.buffer; cy < g_ed.doc.height + g_ed.doc.buffer; ++cy) {
         for (int cx = -g_ed.doc.buffer; cx < g_ed.doc.width + g_ed.doc.buffer; ++cx) {
             const MapCell& cell = g_ed.doc.get_cell(cx, cy);
-            if (cell.is_empty()) continue;
 
             const float x0 = cell_to_screen_x(cx);
             const float y0 = cell_to_screen_y(cy);
@@ -1567,13 +1570,20 @@ static void draw_canvas_viewport_content() {
                 continue; // Frustum cull
             }
 
-            if (has_texture && cell.atlas_x >= 0 && cell.atlas_y >= 0) {
-                const float u0 = static_cast<float>(cell.atlas_x * ts) * inv_tex_w;
-                const float v0 = static_cast<float>(cell.atlas_y * ts) * inv_tex_h;
-                const float u1 = static_cast<float>((cell.atlas_x + 1) * ts) * inv_tex_w;
-                const float v1 = static_cast<float>((cell.atlas_y + 1) * ts) * inv_tex_h;
+            int ax = cell.atlas_x;
+            int ay = cell.atlas_y;
+            if (cell.mode == TileMode::Empty || ax < 0 || ay < 0) {
+                ax = 10;
+                ay = 1;
+            }
+
+            if (has_texture && g_ed.doc.tileset.in_bounds(ax, ay)) {
+                const float u0 = static_cast<float>(ax * ts) * inv_tex_w;
+                const float v0 = static_cast<float>(ay * ts) * inv_tex_h;
+                const float u1 = static_cast<float>((ax + 1) * ts) * inv_tex_w;
+                const float v1 = static_cast<float>((ay + 1) * ts) * inv_tex_h;
                 draw_list->AddImage(reinterpret_cast<ImTextureID>(g_ed.tileset_texture), ImVec2(x0, y0), ImVec2(x1, y1), ImVec2(u0, v0), ImVec2(u1, v1));
-            } else {
+            } else if (!cell.is_empty()) {
                 draw_list->AddRectFilled(ImVec2(x0, y0), ImVec2(x1, y1), IM_COL32(80, 120, 180, 255));
             }
         }
@@ -1821,12 +1831,12 @@ static void draw_canvas_viewport_content() {
         } else if (g_ed.tool == Tool::Eyedropper) {
             g_ed.is_moving_selection = false;
             const MapCell& mc = g_ed.doc.get_cell(cell_x, cell_y);
-            if (!mc.is_empty()) {
-                g_ed.stamp_col = mc.atlas_x;
-                g_ed.stamp_row = mc.atlas_y;
-                g_ed.paint_mode = TileMode::Stamp;
-                g_ed.status_msg = "Sampled tile (" + std::to_string(mc.atlas_x) + ", " + std::to_string(mc.atlas_y) + ")";
-            }
+            const int px = (mc.atlas_x >= 0) ? mc.atlas_x : 10;
+            const int py = (mc.atlas_y >= 0) ? mc.atlas_y : 1;
+            g_ed.stamp_col = px;
+            g_ed.stamp_row = py;
+            g_ed.paint_mode = TileMode::Stamp;
+            g_ed.status_msg = "Sampled tile (" + std::to_string(px) + ", " + std::to_string(py) + ")";
             g_ed.is_drawing = false;
         }
     }
@@ -2229,9 +2239,13 @@ static void draw_sidebar_content(SDL_Renderer* renderer) {
                     const uint8_t tc = g_ed.doc.tileset.get_tile_collision(hover_c, hover_r);
                     const CollisionType* ct = g_ed.doc.get_collision_type(tc);
                     const std::string col_str = (tc == 0) ? "None" : (ct ? ct->name : "Type " + std::to_string(tc));
-                    ImGui::SetTooltip("Tile (%d, %d)%s [Col: %s]", hover_c, hover_r,
-                                      g_ed.doc.tileset.is_extra(hover_c, hover_r) ? " [Variant]" : "",
-                                      col_str.c_str());
+                    if (hover_c == 10 && hover_r == 1) {
+                        ImGui::SetTooltip("Tile (10, 1) [Empty / Background]\nCollision: None (Always empty / no collision)");
+                    } else {
+                        ImGui::SetTooltip("Tile (%d, %d)%s [Col: %s]", hover_c, hover_r,
+                                          g_ed.doc.tileset.is_extra(hover_c, hover_r) ? " [Variant]" : "",
+                                          col_str.c_str());
+                    }
                 }
             }
         }
