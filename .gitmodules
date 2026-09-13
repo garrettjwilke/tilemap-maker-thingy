@@ -11,3 +11,6 @@
 [submodule "deps/gentileset"]
 	path = deps/gentileset
 	url = git@github.com:garrettjwilke/gentileset
+[submodule "deps/tileset-maker-thingy"]
+	path = deps/tileset-maker-thingy
+	url = git@github.com:garrettjwilke/tileset-maker-thingy
