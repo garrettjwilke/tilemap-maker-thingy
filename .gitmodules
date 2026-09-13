@@ -10,7 +10,7 @@
 	url = https://github.com/btzy/nativefiledialog-extended.git
 [submodule "deps/gentileset"]
 	path = deps/gentileset
-	url = git@github.com:garrettjwilke/gentileset
+	url = https://github.com/garrettjwilke/gentileset.git
 [submodule "deps/tileset-maker-thingy"]
 	path = deps/tileset-maker-thingy
-	url = git@github.com:garrettjwilke/tileset-maker-thingy
+	url = https://github.com/garrettjwilke/tileset-maker-thingy.git
