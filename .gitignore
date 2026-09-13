@@ -1,6 +1,10 @@
 tile-stuffs/
 /build/
+/build-*/
+/dist/
+/dist-*/
 /.cache/
 *.o
 .DS_Store
 imgui.ini
+

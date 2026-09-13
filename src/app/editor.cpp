@@ -12,6 +12,7 @@
 #include "../deps/tileset-maker-thingy/src/app/settings.h"
 #include "../deps/tileset-maker-thingy/src/core/convert.h"
 #include "../deps/tileset-maker-thingy/src/core/io.h"
+#include "../deps/tileset-maker-thingy/src/core/project.h"
 
 #include "imgui.h"
 #include "imgui_impl_sdl3.h"
@@ -20,13 +21,22 @@
 
 #include <SDL3/SDL.h>
 
+#ifdef __EMSCRIPTEN__
+#include <emscripten.h>
+#include <emscripten/html5.h>
+#include "wasm/web_file_io.h"
+#endif
+
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <string>
 #include <vector>
+
+namespace fs = std::filesystem;
 
 namespace tmm {
 
@@ -69,6 +79,8 @@ struct EditorState {
     ImVec2 pan_start_offset = ImVec2(0, 0);
     float pinch_scale = 1.0f;
     bool has_pinch = false;
+    ImVec2 pinch_center = ImVec2(-1, -1);
+    bool has_pinch_center = false;
 
     // Sidebar sizing
     float sidebar_w = 380.0f;
@@ -259,6 +271,39 @@ static void sync_tileset_to_atlas(const Tileset& tileset, tsm::AtlasDoc& atlas) 
     atlas.painted = true;
 }
 
+static void restore_project_data_into_editor(const tsm::ProjectData& data, const std::string& path) {
+    g_ed.tileset_editor.doc.restore(data.tileset);
+    if (data.has_atlas) {
+        g_ed.tileset_editor.atlas.restore(data.atlas);
+    } else {
+        g_ed.tileset_editor.atlas.reset(data.tileset.tile_size);
+    }
+    g_ed.tileset_editor.has_atlas = data.has_atlas;
+    g_ed.tileset_editor.art_rev = data.art_rev;
+    g_ed.tileset_editor.atlas_rev = data.has_atlas ? data.art_rev : data.atlas_rev;
+    switch (data.step) {
+        case tsm::ProjectStep::Edges: g_ed.tileset_editor.step = tsm::Step::Edges; break;
+        case tsm::ProjectStep::Specialty: g_ed.tileset_editor.step = tsm::Step::Specialty; break;
+        case tsm::ProjectStep::Variants: g_ed.tileset_editor.step = tsm::Step::Variants; break;
+        case tsm::ProjectStep::Center:
+        default: g_ed.tileset_editor.step = tsm::Step::Center; break;
+    }
+    g_ed.tileset_editor.seeded = data.seeded;
+    g_ed.tileset_editor.stamped = data.stamped;
+    g_ed.tileset_editor.specialty = data.specialty;
+    g_ed.tileset_editor.atlas_cell = data.atlas_cell;
+    g_ed.tileset_editor.preview_sel = data.preview_sel;
+    g_ed.tileset_editor.tile_mode = data.tile_mode;
+    g_ed.tileset_editor.export_header = data.export_header;
+    g_ed.tileset_editor.export_terrain = data.export_terrain;
+    g_ed.tileset_editor.export_5x3 = data.export_5x3;
+    std::snprintf(g_ed.tileset_editor.project_name, sizeof(g_ed.tileset_editor.project_name), "%s", data.name.c_str());
+    g_ed.tileset_editor.project_path = path;
+    g_ed.tileset_editor.status = "Loaded project: " + path;
+    g_ed.tileset_editor.dirty = false;
+    g_ed.tileset_editor.ui.project_open = true;
+}
+
 static void switch_to_view(AppView target, SDL_Renderer* renderer) {
     if (g_ed.current_view == target) return;
 
@@ -274,17 +319,34 @@ static void switch_to_view(AppView target, SDL_Renderer* renderer) {
             g_ed.tileset_editor.configure_view();
             g_ed.status_msg = "Tileset Maker: started new tileset at Step 1 (Center tile).";
         } else {
-            // If there is an existing tileset, import the PNG or terrain (which automatically finds companions)
+            // If there is an existing tileset, import the project, PNG or terrain (which automatically finds companions)
             bool imported = false;
-            std::string path_to_import;
-            if (!g_ed.doc.tileset.terrain_path.empty() && file_exists(g_ed.doc.tileset.terrain_path)) {
-                path_to_import = g_ed.doc.tileset.terrain_path;
-            } else if (!g_ed.doc.tileset.png_path.empty() && file_exists(g_ed.doc.tileset.png_path)) {
-                path_to_import = g_ed.doc.tileset.png_path;
+            if (g_ed.doc.tileset.png_path.size() >= 12 &&
+                g_ed.doc.tileset.png_path.substr(g_ed.doc.tileset.png_path.size() - 12) == ".tilesetproj") {
+                if (g_ed.tileset_editor.ui.project_open && g_ed.tileset_editor.project_path == g_ed.doc.tileset.png_path) {
+                    g_ed.tileset_editor.configure_view();
+                    imported = true;
+                } else if (file_exists(g_ed.doc.tileset.png_path)) {
+                    tsm::ProjectData data;
+                    if (tsm::load_project(data, g_ed.doc.tileset.png_path).empty()) {
+                        restore_project_data_into_editor(data, g_ed.doc.tileset.png_path);
+                        g_ed.tileset_editor.configure_view();
+                        imported = true;
+                    }
+                }
             }
 
-            if (!path_to_import.empty()) {
-                imported = g_ed.tileset_editor.import_12x4(path_to_import);
+            if (!imported) {
+                std::string path_to_import;
+                if (!g_ed.doc.tileset.terrain_path.empty() && file_exists(g_ed.doc.tileset.terrain_path)) {
+                    path_to_import = g_ed.doc.tileset.terrain_path;
+                } else if (!g_ed.doc.tileset.png_path.empty() && file_exists(g_ed.doc.tileset.png_path)) {
+                    path_to_import = g_ed.doc.tileset.png_path;
+                }
+
+                if (!path_to_import.empty()) {
+                    imported = g_ed.tileset_editor.import_12x4(path_to_import);
+                }
             }
 
             if (!imported) {
@@ -352,6 +414,8 @@ static void set_ui_scale(float scale) {
 }
 
 static SDL_Window* s_window = nullptr;
+static SDL_Renderer* s_renderer = nullptr;
+static bool s_running = true;
 
 static bool window_rect_visible(int x, int y, int w, int h) {
     int n = 0;
@@ -412,64 +476,441 @@ static void persist_settings(SDL_Window* window) {
     tsm::save_settings_file(tsm_s, tsm::settings_path());
 }
 
+static bool load_tileset_from_path(const std::string& path, SDL_Renderer* renderer) {
+    if (path.size() >= 12 && path.substr(path.size() - 12) == ".tilesetproj") {
+        tsm::ProjectData data;
+        const std::string err = tsm::load_project(data, path);
+        if (!err.empty()) {
+            g_ed.status_msg = "Error loading tileset project: " + err;
+            return false;
+        }
+        restore_project_data_into_editor(data, path);
+
+        std::string ensure_err = g_ed.tileset_editor.ensure_atlas();
+        if (!ensure_err.empty()) {
+            g_ed.status_msg = "Error preparing tileset atlas: " + ensure_err;
+            return false;
+        }
+        const int new_ts = g_ed.tileset_editor.doc.tile_size;
+        if (g_ed.doc.tile_size != new_ts && (new_ts == 8 || new_ts == 16)) {
+            const int w8 = g_ed.doc.width_8px();
+            const int h8 = g_ed.doc.height_8px();
+            g_ed.doc.reset_8px(w8, h8, new_ts);
+        }
+        sync_atlas_to_tileset(g_ed.tileset_editor.atlas, g_ed.doc.tileset);
+        g_ed.doc.tileset.png_path = path;
+        g_ed.doc.tileset.terrain_path = "";
+        update_tileset_texture(renderer ? renderer : s_renderer);
+        g_ed.doc.solve_all_autotiles();
+        if (!g_ed.doc.tileset.variants.empty()) {
+            g_ed.status_msg = "Imported tileset project (" + std::to_string(g_ed.doc.tileset.variants.size()) +
+                              " variants): " + path;
+        } else {
+            g_ed.status_msg = "Imported tileset project: " + path;
+        }
+        g_ed.settings.last_tileset_path = path;
+        persist_settings();
+        return true;
+    }
+
+    if (g_ed.doc.tileset.load_from_file(path)) {
+        const int old_ts = g_ed.doc.tile_size;
+        const int new_ts = g_ed.doc.tileset.tile_size;
+        if (old_ts != new_ts) {
+            const int w8 = g_ed.doc.width_8px();
+            const int h8 = g_ed.doc.height_8px();
+            g_ed.doc.tile_size = new_ts;
+            g_ed.doc.resize_8px(w8, h8);
+        }
+        g_ed.doc.solve_all_autotiles();
+        update_tileset_texture(renderer ? renderer : s_renderer);
+        if (!g_ed.doc.tileset.variants.empty()) {
+            g_ed.status_msg = "Loaded tileset (" + std::to_string(g_ed.doc.tileset.variants.size()) +
+                              " variants): " + path;
+        } else {
+            g_ed.status_msg = "Loaded tileset: " + path;
+        }
+        g_ed.settings.last_tileset_path = path;
+        persist_settings();
+        return true;
+    } else {
+        g_ed.status_msg = "Error loading tileset: " + g_ed.doc.tileset.error;
+        return false;
+    }
+}
+
+static bool load_map_from_path(const std::string& path, SDL_Renderer* renderer) {
+    std::string err = load_map_json(g_ed.doc, path);
+    if (err.empty()) {
+        g_ed.current_map_path = path;
+        g_ed.settings.last_map_path = path;
+        persist_settings();
+        g_ed.status_msg = "Opened map: " + path;
+        if (!g_ed.doc.tileset.is_valid() && !g_ed.doc.tileset.png_path.empty()) {
+            load_tileset_from_path(g_ed.doc.tileset.png_path, renderer);
+        }
+        update_tileset_texture(renderer ? renderer : s_renderer);
+        return true;
+    } else {
+        g_ed.status_msg = "Error opening map: " + err;
+        return false;
+    }
+}
+
 static void open_tileset_dialog(SDL_Renderer* renderer) {
-    nfdu8filteritem_t filters[3] = {
-        {"Tileset Files (*.png, *.terrain)", "png,terrain"},
+#ifdef __EMSCRIPTEN__
+    (void)renderer;
+    web_trigger_file_dialog(".png,.terrain,.tilesetproj", WebFileTarget_Tileset);
+#else
+    nfdu8filteritem_t filters[4] = {
+        {"Tileset Files (*.png, *.terrain, *.tilesetproj)", "png,terrain,tilesetproj"},
+        {"Tileset Projects (*.tilesetproj)", "tilesetproj"},
         {"PNG Images (*.png)", "png"},
         {"Terrain Files (*.terrain)", "terrain"}
     };
     nfdu8char_t* out_path = nullptr;
-    nfdresult_t res = NFD_OpenDialogU8(&out_path, filters, 3, nullptr);
+    nfdresult_t res = NFD_OpenDialogU8(&out_path, filters, 4, nullptr);
     if (res == NFD_OKAY && out_path) {
-        if (g_ed.doc.tileset.load_from_file(out_path)) {
-            const int old_ts = g_ed.doc.tile_size;
-            const int new_ts = g_ed.doc.tileset.tile_size;
-            if (old_ts != new_ts) {
-                const int w8 = g_ed.doc.width_8px();
-                const int h8 = g_ed.doc.height_8px();
-                g_ed.doc.tile_size = new_ts;
-                g_ed.doc.resize_8px(w8, h8);
-            }
-            g_ed.doc.solve_all_autotiles();
-            update_tileset_texture(renderer);
-            if (!g_ed.doc.tileset.variants.empty()) {
-                g_ed.status_msg = "Loaded tileset (" + std::to_string(g_ed.doc.tileset.variants.size()) +
-                                  " variants): " + std::string(out_path);
-            } else {
-                g_ed.status_msg = "Loaded tileset: " + std::string(out_path);
-            }
-            g_ed.settings.last_tileset_path = out_path;
-            persist_settings();
-        } else {
-            g_ed.status_msg = "Error loading tileset: " + g_ed.doc.tileset.error;
-        }
+        load_tileset_from_path(out_path, renderer);
         NFD_FreePathU8(out_path);
     }
+#endif
 }
 
 static void open_map_dialog(SDL_Renderer* renderer) {
+#ifdef __EMSCRIPTEN__
+    (void)renderer;
+    web_trigger_file_dialog(".json", WebFileTarget_MapJson);
+#else
     nfdu8filteritem_t filters[2] = {{"Map JSON", "json"}, {"All Files", "*"}};
     nfdu8char_t* out_path = nullptr;
     nfdresult_t res = NFD_OpenDialogU8(&out_path, filters, 2, nullptr);
     if (res == NFD_OKAY && out_path) {
-        std::string err = load_map_json(g_ed.doc, out_path);
-        if (err.empty()) {
-            g_ed.current_map_path = out_path;
-            g_ed.settings.last_map_path = out_path;
-            persist_settings();
-            g_ed.status_msg = "Opened map: " + std::string(out_path);
-            update_tileset_texture(renderer);
-        } else {
-            g_ed.status_msg = "Error opening map: " + err;
-        }
+        load_map_from_path(out_path, renderer);
         NFD_FreePathU8(out_path);
     }
+#endif
 }
+
+#ifdef __EMSCRIPTEN__
+static std::string dirname_of(const std::string& path) {
+    return fs::path(path).parent_path().string();
+}
+static std::string basename_of(const std::string& path) {
+    return fs::path(path).stem().string();
+}
+static std::string filename_of(const std::string& path) {
+    return fs::path(path).filename().string();
+}
+
+static std::string s_pending_terrain_path;
+static AppView s_pending_terrain_view = AppView::Tilemap;
+
+void handle_web_file_upload(const std::string& path, int target_type) {
+    std::string ext = "";
+    const size_t dot = path.find_last_of('.');
+    if (dot != std::string::npos) {
+        ext = path.substr(dot);
+        std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) { return std::tolower(c); });
+    }
+
+    if (target_type == WebFileTarget_PendingTerrainPng) {
+        if (!s_pending_terrain_path.empty()) {
+            std::string t_text;
+            std::string expected_ts;
+            if (read_text_file(s_pending_terrain_path, t_text)) {
+                auto ts_pos = t_text.find("\"tileset\"");
+                if (ts_pos != std::string::npos) {
+                    auto col = t_text.find(':', ts_pos);
+                    if (col != std::string::npos) {
+                        auto q1 = t_text.find('"', col + 1);
+                        if (q1 != std::string::npos) {
+                            auto q2 = t_text.find('"', q1 + 1);
+                            if (q2 != std::string::npos) {
+                                expected_ts = t_text.substr(q1 + 1, q2 - q1 - 1);
+                            }
+                        }
+                    }
+                }
+            }
+            std::string stem = basename_of(s_pending_terrain_path);
+            if (stem.size() >= 8 && stem.substr(stem.size() - 8) == ".terrain") {
+                stem = stem.substr(0, stem.size() - 8);
+            }
+            const std::string dir = dirname_of(s_pending_terrain_path);
+            std::error_code ec;
+            if (!expected_ts.empty()) {
+                const std::string dst = (dir.empty() ? "" : (dir + "/")) + filename_of(expected_ts);
+                if (dst != path) {
+                    fs::copy_file(path, dst, fs::copy_options::overwrite_existing, ec);
+                }
+            }
+            const std::string stem_dst = (dir.empty() ? "" : (dir + "/")) + stem + ".png";
+            if (stem_dst != path) {
+                fs::copy_file(path, stem_dst, fs::copy_options::overwrite_existing, ec);
+            }
+
+            const std::string terrain_to_load = s_pending_terrain_path;
+            const AppView view_to_load = s_pending_terrain_view;
+            s_pending_terrain_path.clear();
+
+            if (view_to_load == AppView::TilesetMaker) {
+                switch_to_view(AppView::TilesetMaker, s_renderer);
+                g_ed.tileset_editor.import_12x4(terrain_to_load);
+            } else {
+                load_tileset_from_path(terrain_to_load, s_renderer);
+            }
+            return;
+        }
+    }
+
+    if (target_type == WebFileTarget_MapJson || (target_type == WebFileTarget_Auto && ext == ".json")) {
+        load_map_from_path(path, s_renderer);
+    } else if (target_type == WebFileTarget_TilesetProj || (target_type == WebFileTarget_Auto && ext == ".tilesetproj" && g_ed.current_view == AppView::TilesetMaker)) {
+        switch_to_view(AppView::TilesetMaker, s_renderer);
+        tsm::ProjectData data;
+        const std::string err = tsm::load_project(data, path);
+        if (err.empty()) {
+            restore_project_data_into_editor(data, path);
+            g_ed.tileset_editor.configure_view();
+        } else {
+            g_ed.tileset_editor.status = "Error loading project: " + err;
+        }
+    } else if (target_type == WebFileTarget_Import5x3) {
+        switch_to_view(AppView::TilesetMaker, s_renderer);
+        g_ed.tileset_editor.import_5x3(path);
+    } else if (target_type == WebFileTarget_Import12x4) {
+        switch_to_view(AppView::TilesetMaker, s_renderer);
+        if (ext == ".terrain") {
+            std::string t_text;
+            std::string ts_name;
+            if (read_text_file(path, t_text)) {
+                auto ts_pos = t_text.find("\"tileset\"");
+                if (ts_pos != std::string::npos) {
+                    auto col = t_text.find(':', ts_pos);
+                    if (col != std::string::npos) {
+                        auto q1 = t_text.find('"', col + 1);
+                        if (q1 != std::string::npos) {
+                            auto q2 = t_text.find('"', q1 + 1);
+                            if (q2 != std::string::npos) {
+                                ts_name = t_text.substr(q1 + 1, q2 - q1 - 1);
+                            }
+                        }
+                    }
+                }
+            }
+            const std::string dir = dirname_of(path);
+            std::string stem = basename_of(path);
+            if (stem.size() >= 8 && stem.substr(stem.size() - 8) == ".terrain") {
+                stem = stem.substr(0, stem.size() - 8);
+            }
+            std::vector<std::string> png_candidates;
+            if (!ts_name.empty()) {
+                if (!dir.empty()) png_candidates.push_back(dir + "/" + ts_name);
+                png_candidates.push_back(ts_name);
+            }
+            if (!dir.empty()) png_candidates.push_back(dir + "/" + stem + ".png");
+            png_candidates.push_back(stem + ".png");
+
+            bool png_exists = false;
+            for (const auto& cand : png_candidates) {
+                if (file_exists(cand)) {
+                    png_exists = true;
+                    break;
+                }
+            }
+            const bool current_has_tileset = (g_ed.tileset_editor.has_atlas && !g_ed.tileset_editor.atlas.tiles.empty());
+            if (!png_exists && !current_has_tileset) {
+                s_pending_terrain_path = path;
+                s_pending_terrain_view = AppView::TilesetMaker;
+                const std::string expected_img = ts_name.empty() ? (stem + ".png") : ts_name;
+                const std::string prompt = "Uploaded '" + filename_of(path) + "'. Please select the matching tileset image ('" + expected_img + "')...";
+                g_ed.status_msg = prompt;
+                g_ed.tileset_editor.status = prompt;
+                web_trigger_file_dialog(".png", WebFileTarget_PendingTerrainPng);
+                return;
+            }
+            if (!png_exists && current_has_tileset) {
+                tsm::TerrainLoad tload = tsm::load_terrain(path);
+                if (tload.error.empty()) {
+                    for (const auto& v : tload.variants) {
+                        if (v.x >= g_ed.tileset_editor.atlas.cols) {
+                            g_ed.tileset_editor.atlas.grow_cols(v.x + 1);
+                        }
+                    }
+                    g_ed.tileset_editor.atlas.bindings = tload.variants;
+                    g_ed.tileset_editor.step = tsm::Step::Variants;
+                    g_ed.tileset_editor.configure_view();
+                    g_ed.tileset_editor.status = "Attached terrain variants (" + std::to_string(tload.variants.size()) + ") to current tileset.";
+                    return;
+                }
+            }
+        }
+        g_ed.tileset_editor.import_12x4(path);
+    } else if (target_type == WebFileTarget_Palette || (target_type == WebFileTarget_Auto && ext == ".palette")) {
+        switch_to_view(AppView::TilesetMaker, s_renderer);
+        const auto loaded = tsm::load_palette_file(path.c_str());
+        if (loaded.error.empty()) {
+            g_ed.tileset_editor.push_undo();
+            if (g_ed.tileset_editor.art_step()) g_ed.tileset_editor.doc.apply_palette(loaded.colors);
+            else g_ed.tileset_editor.atlas.apply_palette(loaded.colors);
+            g_ed.tileset_editor.bump_art();
+            g_ed.tileset_editor.status = "Loaded palette.";
+        } else {
+            g_ed.tileset_editor.status = loaded.error;
+        }
+    } else if (target_type == WebFileTarget_Tileset || ext == ".terrain" || ext == ".png" || ext == ".tilesetproj") {
+        if (ext == ".tilesetproj") {
+            if (g_ed.current_view == AppView::TilesetMaker) {
+                switch_to_view(AppView::TilesetMaker, s_renderer);
+                tsm::ProjectData data;
+                const std::string err = tsm::load_project(data, path);
+                if (err.empty()) {
+                    restore_project_data_into_editor(data, path);
+                    g_ed.tileset_editor.configure_view();
+                } else {
+                    g_ed.tileset_editor.status = "Error loading project: " + err;
+                }
+            } else {
+                load_tileset_from_path(path, s_renderer);
+            }
+            return;
+        }
+        if (ext == ".terrain") {
+            std::string t_text;
+            std::string ts_name;
+            if (read_text_file(path, t_text)) {
+                auto ts_pos = t_text.find("\"tileset\"");
+                if (ts_pos != std::string::npos) {
+                    auto col = t_text.find(':', ts_pos);
+                    if (col != std::string::npos) {
+                        auto q1 = t_text.find('"', col + 1);
+                        if (q1 != std::string::npos) {
+                            auto q2 = t_text.find('"', q1 + 1);
+                            if (q2 != std::string::npos) {
+                                ts_name = t_text.substr(q1 + 1, q2 - q1 - 1);
+                            }
+                        }
+                    }
+                }
+            }
+            const std::string dir = dirname_of(path);
+            std::string stem = basename_of(path);
+            if (stem.size() >= 8 && stem.substr(stem.size() - 8) == ".terrain") {
+                stem = stem.substr(0, stem.size() - 8);
+            }
+            std::vector<std::string> png_candidates;
+            if (!ts_name.empty()) {
+                if (!dir.empty()) png_candidates.push_back(dir + "/" + ts_name);
+                png_candidates.push_back(ts_name);
+            }
+            if (!dir.empty()) png_candidates.push_back(dir + "/" + stem + ".png");
+            png_candidates.push_back(stem + ".png");
+
+            bool png_exists = false;
+            for (const auto& cand : png_candidates) {
+                if (file_exists(cand)) {
+                    png_exists = true;
+                    break;
+                }
+            }
+
+            const bool current_has_tileset = (g_ed.current_view == AppView::TilesetMaker)
+                ? (g_ed.tileset_editor.has_atlas && !g_ed.tileset_editor.atlas.tiles.empty())
+                : g_ed.doc.tileset.is_valid();
+
+            if (!png_exists && !current_has_tileset) {
+                s_pending_terrain_path = path;
+                s_pending_terrain_view = (g_ed.current_view == AppView::TilesetMaker) ? AppView::TilesetMaker : AppView::Tilemap;
+                const std::string expected_img = ts_name.empty() ? (stem + ".png") : ts_name;
+                const std::string prompt = "Uploaded '" + filename_of(path) + "'. Please select the matching tileset image ('" + expected_img + "')...";
+                g_ed.status_msg = prompt;
+                if (g_ed.current_view == AppView::TilesetMaker) {
+                    g_ed.tileset_editor.status = prompt;
+                }
+                web_trigger_file_dialog(".png", WebFileTarget_PendingTerrainPng);
+                return;
+            }
+
+            if (g_ed.current_view == AppView::TilesetMaker && !png_exists && current_has_tileset) {
+                tsm::TerrainLoad tload = tsm::load_terrain(path);
+                if (tload.error.empty()) {
+                    for (const auto& v : tload.variants) {
+                        if (v.x >= g_ed.tileset_editor.atlas.cols) {
+                            g_ed.tileset_editor.atlas.grow_cols(v.x + 1);
+                        }
+                    }
+                    g_ed.tileset_editor.atlas.bindings = tload.variants;
+                    g_ed.tileset_editor.step = tsm::Step::Variants;
+                    g_ed.tileset_editor.configure_view();
+                    g_ed.tileset_editor.status = "Attached terrain variants (" + std::to_string(tload.variants.size()) + ") to current tileset.";
+                    return;
+                }
+            }
+        }
+
+        if (g_ed.current_view == AppView::TilesetMaker) {
+            g_ed.tileset_editor.import_12x4(path);
+        } else {
+            load_tileset_from_path(path, s_renderer);
+        }
+    } else {
+        g_ed.status_msg = "Unknown file type: " + path;
+    }
+}
+
+void wasm_open_file(const char* filename) {
+    if (filename) handle_web_file_upload(filename, WebFileTarget_Auto);
+}
+void wasm_open_map(const char* filename) {
+    if (filename) handle_web_file_upload(filename, WebFileTarget_MapJson);
+}
+void wasm_import_tileset(const char* filename) {
+    if (filename) handle_web_file_upload(filename, WebFileTarget_Tileset);
+}
+void wasm_open_project(const char* filename) {
+    if (filename) handle_web_file_upload(filename, WebFileTarget_TilesetProj);
+}
+
+extern "C" {
+EMSCRIPTEN_KEEPALIVE void wasm_c_open_file(const char* filename) {
+    wasm_open_file(filename);
+}
+EMSCRIPTEN_KEEPALIVE void wasm_c_open_map(const char* filename) {
+    wasm_open_map(filename);
+}
+EMSCRIPTEN_KEEPALIVE void wasm_c_import_tileset(const char* filename) {
+    wasm_import_tileset(filename);
+}
+EMSCRIPTEN_KEEPALIVE void wasm_c_open_project(const char* filename) {
+    wasm_open_project(filename);
+}
+}
+
+static float s_wasm_pinch_scale = 1.0f;
+static bool s_wasm_has_pinch = false;
+static float s_wasm_pinch_center_x = -1.0f;
+static float s_wasm_pinch_center_y = -1.0f;
+static bool s_wasm_has_pinch_center = false;
+
+void handle_web_pinch(float factor, float center_x, float center_y) {
+    if (factor > 0.0f) {
+        s_wasm_pinch_scale *= factor;
+        s_wasm_has_pinch = true;
+        if (center_x >= 0.0f && center_y >= 0.0f) {
+            s_wasm_pinch_center_x = center_x;
+            s_wasm_pinch_center_y = center_y;
+            s_wasm_has_pinch_center = true;
+        }
+    }
+}
+#endif
 
 static void save_map_dialog() {
     if (g_ed.selection_lifted) apply_moved_selection();
     if (g_ed.paste_mode) commit_paste();
 
+#ifndef __EMSCRIPTEN__
     if (!g_ed.current_map_path.empty()) {
         std::string err = save_map_json(g_ed.doc, g_ed.current_map_path);
         if (err.empty()) {
@@ -480,6 +921,7 @@ static void save_map_dialog() {
             return;
         }
     }
+#endif
     nfdu8filteritem_t filters[2] = {{"Map JSON", "json"}, {"All Files", "*"}};
     nfdu8char_t* out_path = nullptr;
     nfdresult_t res = NFD_SaveDialogU8(&out_path, filters, 2, nullptr, (g_ed.doc.name + ".json").c_str());
@@ -1213,12 +1655,12 @@ static void draw_canvas_viewport_content() {
         }
     }
 
-    // 1. Pinch gesture zoom (e.g. macOS trackpad pinch-to-zoom)
+    // 1. Pinch gesture zoom (e.g. macOS trackpad pinch-to-zoom, web trackpad/touch pinch)
     if (g_ed.has_pinch && g_ed.pinch_scale > 0.0f) {
         const float old_zoom = g_ed.zoom;
         g_ed.zoom = std::clamp(g_ed.zoom * g_ed.pinch_scale, 0.25f, 16.0f);
-        float mx = io.MousePos.x - canvas_p0.x;
-        float my = io.MousePos.y - canvas_p0.y;
+        float mx = (g_ed.has_pinch_center && g_ed.pinch_center.x >= 0.0f) ? (g_ed.pinch_center.x - canvas_p0.x) : (io.MousePos.x - canvas_p0.x);
+        float my = (g_ed.has_pinch_center && g_ed.pinch_center.y >= 0.0f) ? (g_ed.pinch_center.y - canvas_p0.y) : (io.MousePos.y - canvas_p0.y);
         if (mx < 0.0f || mx > canvas_sz.x || my < 0.0f || my > canvas_sz.y) {
             mx = canvas_sz.x * 0.5f;
             my = canvas_sz.y * 0.5f;
@@ -1227,6 +1669,7 @@ static void draw_canvas_viewport_content() {
         g_ed.pan.y = my - (my - g_ed.pan.y) * (g_ed.zoom / old_zoom);
         g_ed.has_pinch = false;
         g_ed.pinch_scale = 1.0f;
+        g_ed.has_pinch_center = false;
     }
 
     // 2. Trackpad & Mouse Wheel navigation (scroll to pan, Cmd/Ctrl+scroll to zoom)
@@ -2476,6 +2919,9 @@ static void draw_sidebar_export_page() {
     const ImVec4 sec_hdr_col = g_ed.settings.dark ? ImVec4(0.4f, 0.75f, 1.0f, 1.0f) : ImVec4(0.12f, 0.45f, 0.85f, 1.0f);
 
     ImGui::TextColored(sec_hdr_col, "EXPORT SETTINGS");
+#ifdef __EMSCRIPTEN__
+    ImGui::TextDisabled("Exports are automatically downloaded by your browser.");
+#else
     if (ImGui::Button("Export Destination...", ImVec2(-1, 0))) {
         nfdu8char_t* out_dir = nullptr;
         const char* def_dir = (std::strlen(g_ed.export_folder) > 0)
@@ -2494,6 +2940,7 @@ static void draw_sidebar_export_page() {
     } else {
         ImGui::TextDisabled("No folder selected (prompts on Export).");
     }
+#endif
 
     ImGui::Spacing();
     ImGui::Separator();
@@ -2755,8 +3202,19 @@ int run_editor() {
         g_ed.sidebar_page = static_cast<SidebarPage>(g_ed.settings.sidebar_page);
     }
 
+#ifdef __EMSCRIPTEN__
+    double init_css_w = 0.0, init_css_h = 0.0;
+    emscripten_get_element_css_size("#canvas", &init_css_w, &init_css_h);
+    if (init_css_w < 10.0 || init_css_h < 10.0) {
+        init_css_w = MAIN_THREAD_EM_ASM_DOUBLE({ return window.innerWidth; });
+        init_css_h = MAIN_THREAD_EM_ASM_DOUBLE({ return window.innerHeight; });
+    }
+    const int win_w = (init_css_w >= 100.0) ? static_cast<int>(init_css_w) : 1280;
+    const int win_h = (init_css_h >= 100.0) ? static_cast<int>(init_css_h) : 800;
+#else
     const int win_w = (g_ed.settings.window_w >= 640) ? g_ed.settings.window_w : 1280;
     const int win_h = (g_ed.settings.window_h >= 480) ? g_ed.settings.window_h : 800;
+#endif
 
     SDL_Window* window = SDL_CreateWindow("Tilemap Maker", win_w, win_h, SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY);
     if (!window) {
@@ -2765,6 +3223,7 @@ int run_editor() {
     }
     s_window = window;
 
+#ifndef __EMSCRIPTEN__
     if (g_ed.settings.window_placed &&
         window_rect_visible(g_ed.settings.window_x, g_ed.settings.window_y, win_w, win_h)) {
         SDL_SetWindowPosition(window, g_ed.settings.window_x, g_ed.settings.window_y);
@@ -2772,6 +3231,7 @@ int run_editor() {
     if (g_ed.settings.window_maximized) {
         SDL_MaximizeWindow(window);
     }
+#endif
 
     SDL_Renderer* renderer = SDL_CreateRenderer(window, nullptr);
     if (!renderer) {
@@ -2779,6 +3239,16 @@ int run_editor() {
         return 1;
     }
     SDL_SetRenderVSync(renderer, 1);
+
+#ifdef __EMSCRIPTEN__
+    {
+        const float dpr = emscripten_get_device_pixel_ratio();
+        const int buf_w = std::max(1, static_cast<int>(std::round(win_w * dpr)));
+        const int buf_h = std::max(1, static_cast<int>(std::round(win_h * dpr)));
+        emscripten_set_canvas_element_size("#canvas", buf_w, buf_h);
+        SDL_SetWindowSize(window, win_w, win_h);
+    }
+#endif
 
     if (!g_ed.settings.last_tileset_path.empty()) {
         if (g_ed.doc.tileset.load_from_file(g_ed.settings.last_tileset_path)) {
@@ -2808,37 +3278,94 @@ int run_editor() {
     ImGui_ImplSDL3_InitForSDLRenderer(window, renderer);
     ImGui_ImplSDLRenderer3_Init(renderer);
 
-    bool running = true;
-    while (running) {
-        g_ed.has_pinch = false;
-        g_ed.pinch_scale = 1.0f;
-        g_ed.pending_mouse_moves.clear();
-        SDL_Event event;
-        while (SDL_PollEvent(&event)) {
-            ImGui_ImplSDL3_ProcessEvent(&event);
-            if (event.type == SDL_EVENT_MOUSE_MOTION) {
-                g_ed.pending_mouse_moves.push_back(ImVec2(static_cast<float>(event.motion.x), static_cast<float>(event.motion.y)));
-            }
-            if (event.type == SDL_EVENT_PINCH_UPDATE && event.pinch.scale > 0.0f) {
-                g_ed.pinch_scale *= event.pinch.scale;
-                g_ed.has_pinch = true;
-            }
-            if (event.type == SDL_EVENT_QUIT) {
-                running = false;
-            }
-            if (event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED && event.window.windowID == SDL_GetWindowID(window)) {
-                running = false;
-            }
-        }
+    s_window = window;
+    s_renderer = renderer;
+    s_running = true;
 
-        const SDL_WindowFlags win_flags = SDL_GetWindowFlags(window);
-        if (win_flags & SDL_WINDOW_MINIMIZED) {
-            SDL_Delay(20);
-            continue;
-        }
-        if (!(win_flags & (SDL_WINDOW_INPUT_FOCUS | SDL_WINDOW_MOUSE_FOCUS))) {
-            SDL_Delay(32);
-        }
+    struct EditorRunner {
+        static void frame() {
+            if (!s_running) return;
+            SDL_Window* window = s_window;
+            SDL_Renderer* renderer = s_renderer;
+            bool& running = s_running;
+            ImGuiIO& io = ImGui::GetIO();
+
+            g_ed.has_pinch = false;
+            g_ed.pinch_scale = 1.0f;
+            g_ed.pending_mouse_moves.clear();
+
+#ifdef __EMSCRIPTEN__
+            static int s_last_css_w = 0;
+            static int s_last_css_h = 0;
+            static float s_last_dpr = 0.0f;
+
+            double css_w = 0.0, css_h = 0.0;
+            emscripten_get_element_css_size("#canvas", &css_w, &css_h);
+            if (css_w < 10.0 || css_h < 10.0) {
+                css_w = MAIN_THREAD_EM_ASM_DOUBLE({ return window.innerWidth; });
+                css_h = MAIN_THREAD_EM_ASM_DOUBLE({ return window.innerHeight; });
+            }
+            const float dpr = emscripten_get_device_pixel_ratio();
+            const int target_w = static_cast<int>(css_w);
+            const int target_h = static_cast<int>(css_h);
+
+            if (target_w >= 100 && target_h >= 100 &&
+                (target_w != s_last_css_w || target_h != s_last_css_h || std::abs(dpr - s_last_dpr) > 0.001f)) {
+                s_last_css_w = target_w;
+                s_last_css_h = target_h;
+                s_last_dpr = dpr;
+
+                const int buf_w = std::max(1, static_cast<int>(std::round(target_w * dpr)));
+                const int buf_h = std::max(1, static_cast<int>(std::round(target_h * dpr)));
+                emscripten_set_canvas_element_size("#canvas", buf_w, buf_h);
+                SDL_SetWindowSize(window, target_w, target_h);
+            }
+#endif
+
+            SDL_Event event;
+            while (SDL_PollEvent(&event)) {
+                ImGui_ImplSDL3_ProcessEvent(&event);
+                if (event.type == SDL_EVENT_MOUSE_MOTION) {
+                    g_ed.pending_mouse_moves.push_back(ImVec2(static_cast<float>(event.motion.x), static_cast<float>(event.motion.y)));
+                }
+                if (event.type == SDL_EVENT_PINCH_UPDATE && event.pinch.scale > 0.0f) {
+                    g_ed.pinch_scale *= event.pinch.scale;
+                    g_ed.has_pinch = true;
+                }
+                if (event.type == SDL_EVENT_QUIT) {
+                    running = false;
+                }
+                if (event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED && event.window.windowID == SDL_GetWindowID(window)) {
+                    running = false;
+                }
+            }
+
+#ifdef __EMSCRIPTEN__
+            if (s_wasm_has_pinch) {
+                g_ed.pinch_scale *= s_wasm_pinch_scale;
+                g_ed.has_pinch = true;
+                if (s_wasm_has_pinch_center) {
+                    g_ed.has_pinch_center = true;
+                    g_ed.pinch_center = ImVec2(s_wasm_pinch_center_x, s_wasm_pinch_center_y);
+                }
+                s_wasm_pinch_scale = 1.0f;
+                s_wasm_has_pinch = false;
+                s_wasm_has_pinch_center = false;
+            }
+#endif
+
+            const SDL_WindowFlags win_flags = SDL_GetWindowFlags(window);
+            if (win_flags & SDL_WINDOW_MINIMIZED) {
+#ifndef __EMSCRIPTEN__
+                SDL_Delay(20);
+#endif
+                return;
+            }
+#ifndef __EMSCRIPTEN__
+            if (!(win_flags & (SDL_WINDOW_INPUT_FOCUS | SDL_WINDOW_MOUSE_FOCUS))) {
+                SDL_Delay(32);
+            }
+#endif
 
         if (std::abs(g_ed.settings.scale - s_applied_scale) > 0.0001f || (g_ed.settings.dark ? 1 : 0) != s_applied_dark) {
             apply_app_theme(g_ed.settings.dark);
@@ -3006,7 +3533,11 @@ int run_editor() {
                     else g_ed.tileset_editor.save_project(false);
                 }
                 if (cmd && ImGui::IsKeyPressed(ImGuiKey_O)) {
+#ifdef __EMSCRIPTEN__
+                    web_trigger_file_dialog(".tilesetproj", WebFileTarget_TilesetProj);
+#else
                     g_ed.tileset_editor.try_open_project_dialog();
+#endif
                 }
                 if (cmd && ImGui::IsKeyPressed(ImGuiKey_N)) {
                     g_ed.tileset_editor.ui.show_new = true;
@@ -3186,7 +3717,11 @@ int run_editor() {
                         g_ed.tileset_editor.ui.new_focus_name = true;
                     }
                     if (ImGui::MenuItem("Open Project...", "Ctrl+O")) {
+#ifdef __EMSCRIPTEN__
+                        web_trigger_file_dialog(".tilesetproj", WebFileTarget_TilesetProj);
+#else
                         g_ed.tileset_editor.try_open_project_dialog();
+#endif
                     }
                     if (ImGui::MenuItem("Save Project", "Ctrl+S")) {
                         g_ed.tileset_editor.save_project();
@@ -3196,10 +3731,18 @@ int run_editor() {
                     }
                     ImGui::Separator();
                     if (ImGui::MenuItem("Import 12x4 Tileset...")) {
+#ifdef __EMSCRIPTEN__
+                        web_trigger_file_dialog(".png,.terrain", WebFileTarget_Import12x4);
+#else
                         g_ed.tileset_editor.try_import_12x4_dialog();
+#endif
                     }
                     if (ImGui::MenuItem("Import 5x3 Tileset...")) {
+#ifdef __EMSCRIPTEN__
+                        web_trigger_file_dialog(".png", WebFileTarget_Import5x3);
+#else
                         g_ed.tileset_editor.try_import_5x3_dialog();
+#endif
                     }
                     ImGui::Separator();
                     if (ImGui::MenuItem("Export All...", "Ctrl+E")) {
@@ -3414,10 +3957,28 @@ int run_editor() {
         SDL_RenderClear(renderer);
         ImGui_ImplSDLRenderer3_RenderDrawData(ImGui::GetDrawData(), renderer);
         SDL_RenderPresent(renderer);
+
+#ifdef __EMSCRIPTEN__
+        web_flush_downloads();
+        if (!s_running) {
+            emscripten_cancel_main_loop();
+        }
+#endif
     }
+};
+
+#ifdef __EMSCRIPTEN__
+    web_init_file_io();
+    emscripten_set_main_loop(&EditorRunner::frame, 0, 1);
+#else
+    while (s_running) {
+        EditorRunner::frame();
+    }
+#endif
 
     persist_settings();
     s_window = nullptr;
+    s_renderer = nullptr;
 
     if (g_ed.tileset_texture) {
         SDL_DestroyTexture(g_ed.tileset_texture);

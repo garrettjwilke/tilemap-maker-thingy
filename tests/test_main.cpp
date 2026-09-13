@@ -11,6 +11,7 @@
 #include "../deps/tileset-maker-thingy/src/app/tileset_editor.h"
 #include "../deps/tileset-maker-thingy/src/core/convert.h"
 #include "../deps/tileset-maker-thingy/src/core/io.h"
+#include "../deps/tileset-maker-thingy/src/core/project.h"
 
 #include "imgui.h"
 
@@ -1750,6 +1751,40 @@ void test_new_map_empty_tileset() {
     std::remove(png.c_str());
 }
 
+void test_tilesetproj_import() {
+    using namespace tmm;
+    std::string proj_path = temp_path("test_project.tilesetproj");
+
+    tsm::TilesetEditor ed;
+    ed.reset_new("my_tileset", 16);
+    ed.doc.set_pixel(0, 0, 0, 0, 1);
+    ed.project_path = proj_path;
+    std::string save_err = ed.save_project(false);
+    expect(save_err.empty(), "save_project should succeed");
+
+    tsm::ProjectData data;
+    std::string err = tsm::load_project(data, proj_path);
+    expect(err.empty(), "load_project should succeed");
+    expect(data.name == "my_tileset", "project name should match");
+
+    tsm::TilesetEditor ed2;
+    ed2.doc.restore(data.tileset);
+    if (data.has_atlas) ed2.atlas.restore(data.atlas);
+    else ed2.atlas.reset(data.tileset.tile_size);
+    ed2.has_atlas = data.has_atlas;
+    expect(ed2.ensure_atlas().empty(), "ensure_atlas should succeed");
+
+    tmm::Tileset ts;
+    ts.cols = ed2.atlas.cols;
+    ts.rows = tsm::AtlasDoc::kRows;
+    ts.tile_size = ed2.atlas.tile_size;
+    expect(ts.tile_size == 16, "tile size should be 16");
+    expect(ts.cols == 12, "atlas cols should be 12");
+    expect(ts.rows == 4, "atlas rows should be 4");
+
+    std::remove(proj_path.c_str());
+}
+
 } // namespace
 
 int main() {
@@ -1776,6 +1811,7 @@ int main() {
     test_tileset_maker_integration();
     test_ui_scale_and_sync();
     test_new_map_empty_tileset();
+    test_tilesetproj_import();
 
     if (g_fails) {
         std::cerr << g_fails << " test(s) failed\n";

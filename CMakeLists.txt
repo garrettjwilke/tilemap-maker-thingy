@@ -16,9 +16,20 @@ set(SDL_INSTALL OFF CACHE BOOL "" FORCE)
 set(SDL_EXAMPLES OFF CACHE BOOL "" FORCE)
 add_subdirectory(deps/SDL EXCLUDE_FROM_ALL)
 
-set(NFD_BUILD_TESTS OFF CACHE BOOL "" FORCE)
-set(NFD_INSTALL OFF CACHE BOOL "" FORCE)
-add_subdirectory(deps/nativefiledialog-extended EXCLUDE_FROM_ALL)
+if(EMSCRIPTEN)
+    add_library(nfd STATIC
+        src/wasm/nfd_wasm.cpp
+        src/wasm/web_file_io.cpp
+    )
+    target_include_directories(nfd PUBLIC
+        deps/nativefiledialog-extended/src/include
+        src/wasm
+    )
+else()
+    set(NFD_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+    set(NFD_INSTALL OFF CACHE BOOL "" FORCE)
+    add_subdirectory(deps/nativefiledialog-extended EXCLUDE_FROM_ALL)
+endif()
 
 add_library(gentileset STATIC
     deps/gentileset/gentileset.c
@@ -64,20 +75,25 @@ target_include_directories(tileset_core PUBLIC
 )
 target_link_libraries(tileset_core PUBLIC gentileset)
 
-add_executable(tilemap-maker-tests
-    tests/test_main.cpp
-    src/app/settings.cpp
-    src/app/theme.cpp
-    deps/tileset-maker-thingy/src/app/tileset_editor.cpp
-    deps/tileset-maker-thingy/src/app/settings.cpp
-)
-target_include_directories(tilemap-maker-tests PRIVATE
-    src
-    src/core
-    deps/tileset-maker-thingy/src
-    deps/tileset-maker-thingy/src/app
-)
-target_link_libraries(tilemap-maker-tests PRIVATE tilemap_core tileset_core imgui nfd SDL3::SDL3)
+if(NOT EMSCRIPTEN)
+    add_executable(tilemap-maker-tests
+        tests/test_main.cpp
+        src/app/settings.cpp
+        src/app/theme.cpp
+        deps/tileset-maker-thingy/src/app/tileset_editor.cpp
+        deps/tileset-maker-thingy/src/app/settings.cpp
+    )
+    target_include_directories(tilemap-maker-tests PRIVATE
+        src
+        src/core
+        deps/tileset-maker-thingy/src
+        deps/tileset-maker-thingy/src/app
+    )
+    target_link_libraries(tilemap-maker-tests PRIVATE tilemap_core tileset_core imgui nfd SDL3::SDL3)
+
+    enable_testing()
+    add_test(NAME tilemap-maker-self-test COMMAND tilemap-maker-tests)
+endif()
 
 add_executable(tilemap-maker
     src/app/main.cpp
@@ -95,5 +111,25 @@ target_include_directories(tilemap-maker PRIVATE
 )
 target_link_libraries(tilemap-maker PRIVATE tilemap_core tileset_core imgui nfd SDL3::SDL3)
 
-enable_testing()
-add_test(NAME tilemap-maker-self-test COMMAND tilemap-maker-tests)
+if(EMSCRIPTEN)
+    set_target_properties(tilemap-maker PROPERTIES
+        SUFFIX ".js"
+    )
+    target_link_options(tilemap-maker PRIVATE
+        "-sUSE_SDL=0"
+        "-sALLOW_MEMORY_GROWTH=1"
+        "-sMAX_WEBGL_VERSION=2"
+        "-sEXPORTED_RUNTIME_METHODS=ccall,cwrap,FS,stringToNewUTF8,UTF8ToString"
+        "-sEXPORTED_FUNCTIONS=_main,_wasm_on_file_uploaded,_wasm_c_open_file,_wasm_c_open_map,_wasm_c_import_tileset,_wasm_c_open_project,_wasm_on_pinch,_free"
+    )
+
+    add_custom_command(TARGET tilemap-maker POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/wasm/shell.html
+            ${CMAKE_CURRENT_BINARY_DIR}/tilemap-maker.html
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/wasm/shell.html
+            ${CMAKE_CURRENT_BINARY_DIR}/index.html
+        COMMENT "Generating HTML shell for tilemap-maker"
+    )
+endif()

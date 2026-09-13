@@ -103,9 +103,40 @@ jobs:
           name: tilemap-maker-${{ matrix.os }}
           path: dist/*
 
+  build-wasm:
+    name: Build (WASM)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup Emscripten
+        uses: mymindstorm/setup-emsdk@v14
+
+      - name: Build WASM
+        run: |
+          emcmake cmake -B build-wasm -DCMAKE_BUILD_TYPE=Release
+          cmake --build build-wasm --config Release --parallel
+
+      - name: Prepare WASM artifacts
+        run: |
+          mkdir -p dist-wasm
+          cp build-wasm/tilemap-maker.html dist-wasm/
+          cp build-wasm/tilemap-maker.js dist-wasm/
+          cp build-wasm/tilemap-maker.wasm dist-wasm/
+          cp build-wasm/index.html dist-wasm/
+
+      - name: Upload WASM artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: tilemap-maker-wasm
+          path: dist-wasm/*
+
   release:
     name: Create Release
-    needs: build
+    needs: [build, build-wasm]
     if: ${{ github.event.inputs.create_release == 'true' }}
     runs-on: ubuntu-latest
     steps:
@@ -133,6 +164,11 @@ jobs:
           # Windows
           if [ -f artifacts/tilemap-maker-windows-latest/tilemap-maker.exe ]; then
             zip -j release-assets/tilemap-maker-windows.zip artifacts/tilemap-maker-windows-latest/tilemap-maker.exe
+          fi
+
+          # WebAssembly
+          if [ -d artifacts/tilemap-maker-wasm ]; then
+            zip -j release-assets/tilemap-maker-web.zip artifacts/tilemap-maker-wasm/*
           fi
 
       - name: Determine tag name
