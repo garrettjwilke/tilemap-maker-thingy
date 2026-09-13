@@ -965,7 +965,7 @@ static void draw_tool_selection_row() {
                 // Selected tile is in cols >= 12 (Variant tile)
                 VariantBinding* vb = g_ed.doc.tileset.find_variant(sel.x, sel.y);
                 if (vb) {
-                    ImGui::TextColored(ImVec4(0.80f, 0.55f, 1.0f, 1.0f), "Selected: Variant (%d, %d) → Origin (%d, %d)",
+                    ImGui::TextColored(ImVec4(0.80f, 0.55f, 1.0f, 1.0f), "Selected: Variant (%d, %d) -> Origin (%d, %d)",
                                        sel.x, sel.y, vb->root_x, vb->root_y);
                     ImGui::SameLine();
                     ImGui::TextDisabled("|");
@@ -1282,9 +1282,9 @@ static void draw_tool_options_row() {
             ImGui::TextDisabled("|");
             ImGui::SameLine();
             if (g_ed.paste_mode) {
-                ImGui::Text("Pasting: %d×%d at (%d, %d)", g_ed.clipboard.w, g_ed.clipboard.h, g_ed.paste_pos.x, g_ed.paste_pos.y);
+                ImGui::Text("Pasting: %dx%d at (%d, %d)", g_ed.clipboard.w, g_ed.clipboard.h, g_ed.paste_pos.x, g_ed.paste_pos.y);
             } else if (g_ed.has_selection) {
-                ImGui::Text("%s: %d×%d at (%d, %d)", g_ed.selection_is_circle ? "Circle Selected" : "Selected", g_ed.selection.w, g_ed.selection.h, g_ed.selection.x, g_ed.selection.y);
+                ImGui::Text("%s: %dx%d at (%d, %d)", g_ed.selection_is_circle ? "Circle Selected" : "Selected", g_ed.selection.w, g_ed.selection.h, g_ed.selection.x, g_ed.selection.y);
             } else {
                 ImGui::TextDisabled("No active selection");
             }
@@ -2809,7 +2809,7 @@ static void draw_sidebar_content(SDL_Renderer* renderer) {
 
     // 1. Tileset Section
     ImGui::TextColored(sec_hdr_col, "TILESET");
-    if (ImGui::Button("Import Tileset…", ImVec2(-1, 28))) {
+    if (ImGui::Button("Import Tileset...", ImVec2(-1, 28))) {
         open_tileset_dialog(renderer);
     }
 
@@ -2922,7 +2922,7 @@ static void draw_sidebar_content(SDL_Renderer* renderer) {
         const bool in_terrain = (g_ed.view_mode == EditorViewMode::TilesetTerrain);
         {
             ScopedStyleColor active_col(ImGuiCol_Button, ImVec4(0.20f, 0.52f, 0.88f, 1.0f), in_terrain);
-            const char* btn_label = in_terrain ? "✓ Editing Terrain (Click to Return)" : "Edit Terrain";
+            const char* btn_label = in_terrain ? "Editing Terrain (Click to Return)" : "Edit Terrain";
             if (ImGui::Button(btn_label, ImVec2(-1, 28))) {
                 g_ed.view_mode = in_terrain ? EditorViewMode::Tilemap : EditorViewMode::TilesetTerrain;
             }
@@ -3055,7 +3055,7 @@ static void draw_sidebar_content(SDL_Renderer* renderer) {
                 g_ed.doc.width_8px(), g_ed.doc.height_8px(),
                 g_ed.doc.pixel_width(), g_ed.doc.pixel_height());
 
-    if (ImGui::Button("Resize Canvas…", ImVec2(-1, 26))) {
+    if (ImGui::Button("Resize Canvas...", ImVec2(-1, 26))) {
         g_ed.resize_w = g_ed.doc.width_8px();
         g_ed.resize_h = g_ed.doc.height_8px();
         g_ed.show_resize_modal = true;
@@ -3068,7 +3068,7 @@ static void draw_sidebar_content(SDL_Renderer* renderer) {
     ImGui::Separator();
     // 3. Export Section
     ImGui::TextColored(sec_hdr_col, "EXPORT");
-    if (ImGui::Button("Export Destination…", ImVec2(-1, 26))) {
+    if (ImGui::Button("Export Destination...", ImVec2(-1, 26))) {
         nfdu8char_t* out_dir = nullptr;
         const char* def_dir = (std::strlen(g_ed.export_folder) > 0)
             ? g_ed.export_folder
@@ -3086,7 +3086,6 @@ static void draw_sidebar_content(SDL_Renderer* renderer) {
     } else {
         ImGui::TextDisabled("No folder selected (prompts on Export).");
     }
-    ImGui::TextDisabled("• Composite PNG is always exported (%s.png)", (!g_ed.doc.name.empty() ? g_ed.doc.name.c_str() : "map"));
     ImGui::Spacing();
 
     ImGui::Checkbox("MDE Collision JSON", &g_ed.export_col_json);
@@ -3473,16 +3472,16 @@ int run_editor() {
         // Main Menu Bar
         if (ImGui::BeginMainMenuBar()) {
             if (ImGui::BeginMenu("File")) {
-                if (ImGui::MenuItem("New Map…", "Ctrl+N")) {
+                if (ImGui::MenuItem("New Map...", "Ctrl+N")) {
                     g_ed.show_new_modal = true;
                 }
-                if (ImGui::MenuItem("Open Map…", "Ctrl+O")) {
+                if (ImGui::MenuItem("Open Map...", "Ctrl+O")) {
                     open_map_dialog(renderer);
                 }
                 if (ImGui::MenuItem("Save Map", "Ctrl+S")) {
                     save_map_dialog();
                 }
-                if (ImGui::MenuItem("Import Tileset…", "Ctrl+I")) {
+                if (ImGui::MenuItem("Import Tileset...", "Ctrl+I")) {
                     open_tileset_dialog(renderer);
                 }
                 ImGui::Separator();
@@ -3520,7 +3519,7 @@ int run_editor() {
                     deselect();
                 }
                 ImGui::Separator();
-                if (ImGui::MenuItem("Resize Canvas…")) {
+                if (ImGui::MenuItem("Resize Canvas...")) {
                     g_ed.resize_w = g_ed.doc.width_8px();
                     g_ed.resize_h = g_ed.doc.height_8px();
                     g_ed.show_resize_modal = true;
