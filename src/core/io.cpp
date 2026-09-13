@@ -152,7 +152,7 @@ std::string export_collision_bin(const TilemapDoc& doc, const std::string& path)
     return "";
 }
 
-std::string save_map_json(const TilemapDoc& doc, const std::string& path) {
+std::string save_map_json(const TilemapDoc& doc, const std::string& path, const std::string& tileset_path_override) {
     std::ostringstream ss;
     ss << "{\n";
     ss << "\t\"version\": 4,\n";
@@ -163,8 +163,9 @@ std::string save_map_json(const TilemapDoc& doc, const std::string& path) {
     ss << "\t\"buffer\": " << doc.buffer << ",\n";
     ss << "\t\"origin_x\": " << doc.origin_x << ",\n";
     ss << "\t\"origin_y\": " << doc.origin_y << ",\n";
-    if (!doc.tileset.png_path.empty()) {
-        ss << "\t\"tileset\": \"" << doc.tileset.png_path << "\",\n";
+    const std::string ts_ref = !tileset_path_override.empty() ? tileset_path_override : doc.tileset.png_path;
+    if (!ts_ref.empty()) {
+        ss << "\t\"tileset\": \"" << ts_ref << "\",\n";
     }
     ss << "\t\"collision_types\": [\n";
     for (size_t i = 0; i < doc.collision_types.size(); ++i) {
@@ -431,14 +432,54 @@ std::string load_map_json(TilemapDoc& doc, const std::string& path) {
     return "";
 }
 
-static std::string render_terrain_json(const Tileset& tileset, const std::string& path) {
-    std::string tileset_name;
-    if (!tileset.png_path.empty()) {
-        tileset_name = filename_of(tileset.png_path);
-    } else {
-        tileset_name = filename_of(path);
-        if (tileset_name.size() >= 8 && tileset_name.substr(tileset_name.size() - 8) == ".terrain") {
-            tileset_name = tileset_name.substr(0, tileset_name.size() - 8) + ".png";
+std::string export_tileset_png(const Tileset& tileset, const std::string& path) {
+    if (!tileset.is_valid()) {
+        return "No valid tileset loaded to export";
+    }
+    const int out_w = tileset.image_width();
+    const int out_h = tileset.image_height();
+    if (out_w <= 0 || out_h <= 0) {
+        return "Invalid tileset dimensions";
+    }
+    Image like{};
+    like.bpp = 1;
+    like.indexed = 1;
+    like.palettesize = static_cast<unsigned>(std::min(static_cast<int>(tileset.palette.size()), 256));
+    std::memset(like.palette, 0, sizeof(like.palette));
+    for (unsigned i = 0; i < like.palettesize; ++i) {
+        like.palette[i][0] = tileset.palette[i].r;
+        like.palette[i][1] = tileset.palette[i].g;
+        like.palette[i][2] = tileset.palette[i].b;
+        like.palette[i][3] = 255;
+    }
+    Image im{};
+    if (!image_alloc(&im, static_cast<unsigned>(out_w), static_cast<unsigned>(out_h), &like)) {
+        return "Failed to allocate tileset image memory";
+    }
+    const size_t sz = static_cast<size_t>(out_w * out_h);
+    const size_t copy_sz = std::min(sz, tileset.pixels.size());
+    std::memcpy(im.px, tileset.pixels.data(), copy_sz);
+    if (copy_sz < sz) {
+        std::memset(im.px + copy_sz, 0, sz - copy_sz);
+    }
+    const int ok = save_png(path.c_str(), &im);
+    image_free(&im);
+    return ok ? std::string() : ("Could not save tileset PNG to " + path);
+}
+
+static std::string render_terrain_json(const Tileset& tileset, const std::string& path, const std::string& tileset_image_name = "") {
+    std::string tileset_name = tileset_image_name;
+    if (tileset_name.empty()) {
+        if (!tileset.png_path.empty()) {
+            tileset_name = filename_of(tileset.png_path);
+            if (tileset_name.size() >= 12 && tileset_name.substr(tileset_name.size() - 12) == ".tilesetproj") {
+                tileset_name = tileset_name.substr(0, tileset_name.size() - 12) + ".png";
+            }
+        } else {
+            tileset_name = filename_of(path);
+            if (tileset_name.size() >= 8 && tileset_name.substr(tileset_name.size() - 8) == ".terrain") {
+                tileset_name = tileset_name.substr(0, tileset_name.size() - 8) + ".png";
+            }
         }
     }
 
@@ -463,11 +504,11 @@ static std::string render_terrain_json(const Tileset& tileset, const std::string
     return ss.str();
 }
 
-std::string save_terrain_file(Tileset& tileset, const std::string& path) {
+std::string save_terrain_file(Tileset& tileset, const std::string& path, const std::string& tileset_image_name) {
     if (path.empty()) {
         return "Path is empty";
     }
-    const std::string text = render_terrain_json(tileset, path);
+    const std::string text = render_terrain_json(tileset, path, tileset_image_name);
     if (!write_text_file(path, text)) {
         return "Could not write terrain file to " + path;
     }
@@ -475,11 +516,11 @@ std::string save_terrain_file(Tileset& tileset, const std::string& path) {
     return "";
 }
 
-std::string export_tileset_terrain(const Tileset& tileset, const std::string& path) {
+std::string export_tileset_terrain(const Tileset& tileset, const std::string& path, const std::string& tileset_image_name) {
     if (path.empty()) {
         return "Export path is empty";
     }
-    const std::string text = render_terrain_json(tileset, path);
+    const std::string text = render_terrain_json(tileset, path, tileset_image_name);
     if (!write_text_file(path, text)) {
         return "Could not export terrain file to " + path;
     }

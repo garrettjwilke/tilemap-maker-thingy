@@ -131,6 +131,8 @@ struct EditorState {
     bool export_col_bin = true;
     bool export_map_json = true;
     bool export_terrain = true;
+    bool export_tileset_png = true;
+    bool export_tileset_proj = true;
 
     std::string status_msg = "Ready.";
     std::string current_map_path;
@@ -464,6 +466,9 @@ static void persist_settings(SDL_Window* window) {
     if (std::strlen(g_ed.export_folder) > 0) {
         g_ed.settings.last_export_dir = g_ed.export_folder;
     }
+    g_ed.settings.export_terrain = g_ed.export_terrain;
+    g_ed.settings.export_tileset_png = g_ed.export_tileset_png;
+    g_ed.settings.export_tileset_proj = g_ed.export_tileset_proj;
     ensure_config_dir();
     save_settings_file(g_ed.settings, settings_path());
 
@@ -944,6 +949,157 @@ static void save_map_dialog() {
     }
 }
 
+static std::string path_filename(const std::string& path) {
+    const auto slash = path.find_last_of("/\\");
+    return (slash == std::string::npos) ? path : path.substr(slash + 1);
+}
+
+static std::string save_tileset_project_to_file(const std::string& path, const std::string& name) {
+    if (!g_ed.doc.tileset.is_valid()) return "No valid tileset to export";
+
+    // If the tileset editor has open project / atlas data, sync current doc variants and colors
+    if (g_ed.tileset_editor.has_atlas && !g_ed.tileset_editor.atlas.tiles.empty()) {
+        sync_tileset_to_atlas(g_ed.doc.tileset, g_ed.tileset_editor.atlas);
+        tsm::ProjectData data;
+        data.name = !name.empty() ? name : (g_ed.tileset_editor.project_name[0] ? g_ed.tileset_editor.project_name : "tileset");
+        switch (g_ed.tileset_editor.step) {
+            case tsm::Step::Edges: data.step = tsm::ProjectStep::Edges; break;
+            case tsm::Step::Specialty: data.step = tsm::ProjectStep::Specialty; break;
+            case tsm::Step::Variants: data.step = tsm::ProjectStep::Variants; break;
+            case tsm::Step::Center:
+            default: data.step = tsm::ProjectStep::Center; break;
+        }
+        data.seeded = g_ed.tileset_editor.seeded;
+        data.stamped = g_ed.tileset_editor.stamped;
+        data.specialty = g_ed.tileset_editor.specialty;
+        data.atlas_cell = g_ed.tileset_editor.atlas_cell;
+        data.preview_sel = g_ed.tileset_editor.preview_sel;
+        data.tile_mode = g_ed.tileset_editor.tile_mode;
+        data.export_header = g_ed.tileset_editor.export_header;
+        data.export_terrain = g_ed.tileset_editor.export_terrain;
+        data.export_5x3 = g_ed.tileset_editor.export_5x3;
+        data.art_rev = g_ed.tileset_editor.art_rev;
+        data.atlas_rev = g_ed.tileset_editor.atlas_rev;
+        data.has_atlas = true;
+        data.tileset = g_ed.tileset_editor.doc.snapshot();
+        data.atlas = g_ed.tileset_editor.atlas.snapshot();
+        return tsm::save_project(data, path);
+    }
+
+    // Otherwise, construct atlas and tileset doc snapshot from doc.tileset
+    sync_tileset_to_atlas(g_ed.doc.tileset, g_ed.tileset_editor.atlas);
+    tsm::convert_atlas_to_tileset(g_ed.tileset_editor.atlas, g_ed.tileset_editor.doc);
+    g_ed.tileset_editor.step = tsm::Step::Variants;
+    g_ed.tileset_editor.has_atlas = true;
+
+    tsm::ProjectData data;
+    data.name = !name.empty() ? name : (g_ed.tileset_editor.project_name[0] ? g_ed.tileset_editor.project_name : "tileset");
+    data.step = tsm::ProjectStep::Variants;
+    data.seeded = false;
+    data.stamped = false;
+    data.tile_mode = true;
+    data.export_header = true;
+    data.export_terrain = true;
+    data.export_5x3 = true;
+    data.has_atlas = true;
+    data.tileset = g_ed.tileset_editor.doc.snapshot();
+    data.atlas = g_ed.tileset_editor.atlas.snapshot();
+    return tsm::save_project(data, path);
+}
+
+static void export_tileset_dialog() {
+    if (!g_ed.doc.tileset.is_valid()) {
+        g_ed.status_msg = "No tileset to export.";
+        return;
+    }
+
+    const char* default_dir = (std::strlen(g_ed.export_folder) > 0)
+        ? g_ed.export_folder
+        : (!g_ed.settings.last_export_dir.empty() ? g_ed.settings.last_export_dir.c_str() : nullptr);
+
+    std::string def_ts_name = "tileset.png";
+    if (g_ed.tileset_editor.project_name[0] &&
+        std::strcmp(g_ed.tileset_editor.project_name, "untitled") != 0) {
+        def_ts_name = std::string(g_ed.tileset_editor.project_name) + ".png";
+    } else if (!g_ed.doc.tileset.png_path.empty()) {
+        std::string fn = path_filename(g_ed.doc.tileset.png_path);
+        auto dot = fn.find_last_of('.');
+        if (dot != std::string::npos) fn = fn.substr(0, dot) + ".png";
+        if (!fn.empty()) def_ts_name = fn;
+    }
+
+    nfdu8filteritem_t filters[3] = {
+        {"PNG Image (*.png)", "png"},
+        {"Tileset Project (*.tilesetproj)", "tilesetproj"},
+        {"All Files (*)", "*"}
+    };
+    nfdu8char_t* out_path = nullptr;
+
+    nfdresult_t res = NFD_SaveDialogU8(&out_path, filters, 3, default_dir, def_ts_name.c_str());
+    if (res != NFD_OKAY || !out_path) {
+        if (res == NFD_ERROR) {
+            g_ed.status_msg = "Export dialog error: " + std::string(NFD_GetError());
+        }
+        return;
+    }
+
+    std::string chosen = out_path;
+    NFD_FreePathU8(out_path);
+
+    std::string dir;
+    std::string stem;
+    const size_t last_slash = chosen.find_last_of("/\\");
+    if (last_slash != std::string::npos) {
+        dir = chosen.substr(0, last_slash);
+        const std::string filename = chosen.substr(last_slash + 1);
+        auto dot = filename.find_last_of('.');
+        stem = (dot != std::string::npos) ? filename.substr(0, dot) : filename;
+    } else {
+        dir = ".";
+        auto dot = chosen.find_last_of('.');
+        stem = (dot != std::string::npos) ? chosen.substr(0, dot) : chosen;
+    }
+
+    if (stem.empty()) stem = "tileset";
+
+    std::vector<std::string> saved;
+    // 1. Export Tileset PNG
+    {
+        std::string png_path = dir + "/" + stem + ".png";
+        std::string err = export_tileset_png(g_ed.doc.tileset, png_path);
+        if (!err.empty()) {
+            g_ed.status_msg = "Tileset PNG export failed: " + err;
+            return;
+        }
+        saved.push_back(stem + ".png");
+    }
+    // 2. Export Tileset Project (.tilesetproj)
+    {
+        std::string proj_path = dir + "/" + stem + ".tilesetproj";
+        std::string err = save_tileset_project_to_file(proj_path, stem);
+        if (!err.empty()) {
+            g_ed.status_msg = "Tileset project export failed: " + err;
+            return;
+        }
+        saved.push_back(stem + ".tilesetproj");
+    }
+    // 3. Export Terrain if variants exist
+    if (!g_ed.doc.tileset.variants.empty()) {
+        std::string terr_path = dir + "/" + stem + ".terrain";
+        std::string err = export_tileset_terrain(g_ed.doc.tileset, terr_path, stem + ".png");
+        if (err.empty()) {
+            saved.push_back(stem + ".terrain");
+        }
+    }
+
+    std::string msg = "Tileset exported: ";
+    for (size_t i = 0; i < saved.size(); ++i) {
+        if (i > 0) msg += ", ";
+        msg += saved[i];
+    }
+    g_ed.status_msg = msg;
+}
+
 static void execute_export() {
     if (g_ed.selection_lifted) apply_moved_selection();
     if (g_ed.paste_mode) commit_paste();
@@ -993,6 +1149,24 @@ static void execute_export() {
     const std::string prefix = dir + "/" + stem;
     std::vector<std::string> saved_files;
 
+    // Companion tileset stem for exported tileset files
+    std::string ts_stem;
+    if (g_ed.tileset_editor.project_name[0] &&
+        std::strcmp(g_ed.tileset_editor.project_name, "tileset") != 0 &&
+        std::strcmp(g_ed.tileset_editor.project_name, "untitled") != 0) {
+        ts_stem = g_ed.tileset_editor.project_name;
+    } else if (!g_ed.doc.tileset.png_path.empty()) {
+        std::string base = path_filename(g_ed.doc.tileset.png_path);
+        auto dot = base.find_last_of('.');
+        if (dot != std::string::npos) base = base.substr(0, dot);
+        if (!base.empty() && base != "tileset" && base != "untitled") {
+            ts_stem = base;
+        }
+    }
+    if (ts_stem.empty() || ts_stem == stem) {
+        ts_stem = stem + "_tileset";
+    }
+
     // Composite PNG is always exported
     {
         const std::string p = prefix + ".png";
@@ -1026,21 +1200,44 @@ static void execute_export() {
     }
     if (g_ed.export_map_json) {
         const std::string p = prefix + ".json";
-        std::string err = save_map_json(g_ed.doc, p);
+        const std::string ts_ref = (g_ed.export_tileset_png && g_ed.doc.tileset.is_valid()) ? (ts_stem + ".png") :
+                                   ((g_ed.export_tileset_proj && g_ed.doc.tileset.is_valid()) ? (ts_stem + ".tilesetproj") : "");
+        std::string err = save_map_json(g_ed.doc, p, ts_ref);
         if (!err.empty()) {
             g_ed.status_msg = "Map JSON export failed: " + err;
             return;
         }
         saved_files.push_back(stem + ".json");
     }
-    if (g_ed.export_terrain) {
-        const std::string p = prefix + ".terrain";
-        std::string err = export_tileset_terrain(g_ed.doc.tileset, p);
-        if (!err.empty()) {
-            g_ed.status_msg = "Terrain export failed: " + err;
-            return;
+
+    if (g_ed.doc.tileset.is_valid()) {
+        if (g_ed.export_tileset_png) {
+            const std::string p = dir + "/" + ts_stem + ".png";
+            std::string err = export_tileset_png(g_ed.doc.tileset, p);
+            if (!err.empty()) {
+                g_ed.status_msg = "Tileset PNG export failed: " + err;
+                return;
+            }
+            saved_files.push_back(ts_stem + ".png");
         }
-        saved_files.push_back(stem + ".terrain");
+        if (g_ed.export_tileset_proj) {
+            const std::string p = dir + "/" + ts_stem + ".tilesetproj";
+            std::string err = save_tileset_project_to_file(p, ts_stem);
+            if (!err.empty()) {
+                g_ed.status_msg = "Tileset project export failed: " + err;
+                return;
+            }
+            saved_files.push_back(ts_stem + ".tilesetproj");
+        }
+        if (g_ed.export_terrain) {
+            const std::string p = dir + "/" + ts_stem + ".terrain";
+            std::string err = export_tileset_terrain(g_ed.doc.tileset, p, ts_stem + ".png");
+            if (!err.empty()) {
+                g_ed.status_msg = "Terrain export failed: " + err;
+                return;
+            }
+            saved_files.push_back(ts_stem + ".terrain");
+        }
     }
 
     std::string msg = "Export complete: ";
@@ -2334,6 +2531,9 @@ static void draw_sidebar_tileset_page(SDL_Renderer* renderer) {
         if (ImGui::Button("Edit in Tileset Maker...", ImVec2(-1, 0))) {
             switch_to_view(AppView::TilesetMaker, renderer);
         }
+        if (ImGui::Button("Export Tileset...", ImVec2(-1, 0))) {
+            export_tileset_dialog();
+        }
     }
 
     if (g_ed.doc.tileset.is_valid()) {
@@ -2946,7 +3146,7 @@ static void draw_sidebar_export_page() {
     ImGui::Separator();
     ImGui::Spacing();
 
-    ImGui::TextColored(sec_hdr_col, "FORMATS");
+    ImGui::TextColored(sec_hdr_col, "MAP FORMATS");
     ImGui::Checkbox("MDE Collision JSON", &g_ed.export_col_json);
     const int types_used = g_ed.doc.build_collision_grid().count_types_used();
     if (types_used > 1) {
@@ -2959,8 +3159,26 @@ static void draw_sidebar_export_page() {
         ImGui::Checkbox("Collision BIN", &g_ed.export_col_bin);
     }
     ImGui::Checkbox("Map JSON", &g_ed.export_map_json);
-    ImGui::Checkbox("Tileset Terrain (.terrain)", &g_ed.export_terrain);
-    ImGui::TextDisabled("Composite PNG (.png) is always exported.");
+    ImGui::TextDisabled("Composite Map PNG is always exported.");
+
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
+
+    ImGui::TextColored(sec_hdr_col, "TILESET FORMATS");
+    if (!g_ed.doc.tileset.is_valid()) {
+        ImGui::TextDisabled("No tileset loaded.");
+    } else {
+        if (ImGui::Checkbox("Tileset Image (.png)", &g_ed.export_tileset_png)) {
+            persist_settings();
+        }
+        if (ImGui::Checkbox("Tileset Project (.tilesetproj)", &g_ed.export_tileset_proj)) {
+            persist_settings();
+        }
+        if (ImGui::Checkbox("Tileset Terrain (.terrain)", &g_ed.export_terrain)) {
+            persist_settings();
+        }
+    }
 
     ImGui::Spacing();
     ImGui::Separator();
@@ -3198,6 +3416,9 @@ int run_editor() {
     g_ed.rect_fill = true;
     g_ed.rect_circle = false;
     g_ed.tileset_mode = TilesetSidebarMode::Stamp;
+    g_ed.export_terrain = g_ed.settings.export_terrain;
+    g_ed.export_tileset_png = g_ed.settings.export_tileset_png;
+    g_ed.export_tileset_proj = g_ed.settings.export_tileset_proj;
     if (g_ed.settings.sidebar_page >= 0 && g_ed.settings.sidebar_page <= 2) {
         g_ed.sidebar_page = static_cast<SidebarPage>(g_ed.settings.sidebar_page);
     }
@@ -3568,6 +3789,9 @@ int run_editor() {
                     }
                     if (ImGui::MenuItem("Edit in Tileset Maker...", "F2")) {
                         switch_to_view(AppView::TilesetMaker, renderer);
+                    }
+                    if (ImGui::MenuItem("Export Tileset...", nullptr, false, g_ed.doc.tileset.is_valid())) {
+                        export_tileset_dialog();
                     }
                     ImGui::Separator();
                     if (ImGui::MenuItem("Export", "Ctrl+E")) {

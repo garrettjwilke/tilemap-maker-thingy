@@ -19,6 +19,8 @@ struct Settings {
     int paint_mode = 0; // 0 = Terrain, 1 = Stamp
     int sidebar_page = 0; // 0 = Tileset, 1 = MapProperties, 2 = Export
     bool export_terrain = true;
+    bool export_tileset_png = true;
+    bool export_tileset_proj = true;
     Rgb grid_color{100, 100, 100};
     int window_x = 0;
     int window_y = 0;

@@ -14,12 +14,15 @@ std::string export_mde_collision_json(const TilemapDoc& doc, const std::string& 
 std::string export_collision_bin(const TilemapDoc& doc, const std::string& path);
 
 // Map project JSON save & load (MapIo v4 format)
-std::string save_map_json(const TilemapDoc& doc, const std::string& path);
+std::string save_map_json(const TilemapDoc& doc, const std::string& path, const std::string& tileset_path_override = "");
 std::string load_map_json(TilemapDoc& doc, const std::string& path);
 
+// Tileset PNG export
+std::string export_tileset_png(const Tileset& tileset, const std::string& path);
+
 // Tileset terrain save & export
-std::string save_terrain_file(Tileset& tileset, const std::string& path);
-std::string export_tileset_terrain(const Tileset& tileset, const std::string& path);
+std::string save_terrain_file(Tileset& tileset, const std::string& path, const std::string& tileset_image_name = "");
+std::string export_tileset_terrain(const Tileset& tileset, const std::string& path, const std::string& tileset_image_name = "");
 
 // File helpers
 bool write_text_file(const std::string& path, const std::string& text);

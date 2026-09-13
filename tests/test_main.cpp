@@ -1785,6 +1785,86 @@ void test_tilesetproj_import() {
     std::remove(proj_path.c_str());
 }
 
+void test_tileset_export() {
+    using namespace tmm;
+    const std::string dummy_png = temp_path("test_export_orig.png");
+    expect(create_dummy_tileset_png(dummy_png, 16, 12, 4), "create dummy 12x4 tileset");
+
+    Tileset ts;
+    expect(ts.load_from_file(dummy_png), "load dummy tileset for export test");
+    ts.palette[1] = Rgb{255, 128, 64};
+    ts.pixels[0] = 1;
+    ts.set_variant(12, 0, 9, 2, 0.45f);
+
+    // 1. Test export_tileset_png
+    const std::string exported_png = temp_path("test_exported_ts.png");
+    std::string err = export_tileset_png(ts, exported_png);
+    expect(err.empty(), "export_tileset_png should succeed");
+
+    Tileset reloaded_ts;
+    expect(reloaded_ts.load_from_file(exported_png), "load exported tileset PNG");
+    expect(reloaded_ts.cols == 12, "reloaded ts cols match");
+    expect(reloaded_ts.rows == 4, "reloaded ts rows match");
+    expect(reloaded_ts.tile_size == 16, "reloaded ts tile_size matches");
+    expect(reloaded_ts.palette.size() >= 2, "reloaded ts palette size");
+    expect(reloaded_ts.palette[1].r == 255 && reloaded_ts.palette[1].g == 128 && reloaded_ts.palette[1].b == 64, "reloaded ts palette color preserved");
+    expect(reloaded_ts.pixels[0] == 1, "reloaded ts pixel preserved");
+
+    // 2. Test export_tileset_terrain with image name override
+    const std::string exported_terr = temp_path("test_exported_ts.terrain");
+    err = export_tileset_terrain(ts, exported_terr, "custom_name.png");
+    expect(err.empty(), "export_tileset_terrain with override should succeed");
+
+    std::string terr_text;
+    expect(read_text_file(exported_terr, terr_text), "read exported terrain file");
+    expect(terr_text.find("\"tileset\": \"custom_name.png\"") != std::string::npos, "terrain file has overridden tileset image name");
+
+    // 3. Test save_map_json with tileset override
+    TilemapDoc doc(20, 14, 16);
+    doc.tileset = ts;
+    const std::string map_json_path = temp_path("test_exported_map.json");
+    err = save_map_json(doc, map_json_path, "my_tileset.png");
+    expect(err.empty(), "save_map_json with tileset override should succeed");
+
+    std::string map_text;
+    expect(read_text_file(map_json_path, map_text), "read exported map json");
+    expect(map_text.find("\"tileset\": \"my_tileset.png\"") != std::string::npos, "map json references companion tileset");
+
+    // 4. Test tileset project export & reload
+    tsm::TilesetEditor ed;
+    ed.reset_new("exported_project", 16);
+    const std::string proj_path = temp_path("test_exported_project.tilesetproj");
+    ed.project_path = proj_path;
+    err = ed.save_project(false);
+    expect(err.empty(), "saving tilesetproj should succeed");
+
+    tsm::ProjectData pdata;
+    err = tsm::load_project(pdata, proj_path);
+    expect(err.empty(), "loading exported tilesetproj should succeed");
+    expect(pdata.name == "exported_project", "project name matches in loaded tilesetproj");
+    expect(pdata.tileset.tile_size == 16, "tile_size matches in loaded tilesetproj");
+
+    // 5. Test Settings persistence for export_tileset_png and export_tileset_proj
+    Settings s;
+    s.export_tileset_png = true;
+    s.export_tileset_proj = true;
+    std::string s_text = format_settings(s);
+    expect(s_text.find("export_tileset_png=true") != std::string::npos, "settings text formats export_tileset_png");
+    expect(s_text.find("export_tileset_proj=true") != std::string::npos, "settings text formats export_tileset_proj");
+
+    Settings s_parsed;
+    expect(parse_settings_text(s_parsed, "export_tileset_png=false\nexport_tileset_proj=false\n"), "parse settings text");
+    expect(!s_parsed.export_tileset_png, "parsed export_tileset_png is false");
+    expect(!s_parsed.export_tileset_proj, "parsed export_tileset_proj is false");
+
+    // Cleanup
+    std::remove(dummy_png.c_str());
+    std::remove(exported_png.c_str());
+    std::remove(exported_terr.c_str());
+    std::remove(map_json_path.c_str());
+    std::remove(proj_path.c_str());
+}
+
 } // namespace
 
 int main() {
@@ -1812,6 +1892,7 @@ int main() {
     test_ui_scale_and_sync();
     test_new_map_empty_tileset();
     test_tilesetproj_import();
+    test_tileset_export();
 
     if (g_fails) {
         std::cerr << g_fails << " test(s) failed\n";

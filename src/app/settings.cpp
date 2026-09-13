@@ -92,6 +92,8 @@ std::string format_settings(const Settings& s) {
     ss << "paint_mode=" << (s.paint_mode == 1 ? "stamp" : "terrain") << "\n";
     ss << "sidebar_page=" << s.sidebar_page << "\n";
     ss << "export_terrain=" << (s.export_terrain ? "true" : "false") << "\n";
+    ss << "export_tileset_png=" << (s.export_tileset_png ? "true" : "false") << "\n";
+    ss << "export_tileset_proj=" << (s.export_tileset_proj ? "true" : "false") << "\n";
     ss << "window_x=" << s.window_x << "\n";
     ss << "window_y=" << s.window_y << "\n";
     ss << "window_w=" << s.window_w << "\n";
@@ -128,6 +130,8 @@ bool parse_settings_text(Settings& s, const std::string& text) {
         else if (key == "paint_mode") s.paint_mode = (val == "stamp" || val == "1") ? 1 : 0;
         else if (key == "sidebar_page") s.sidebar_page = std::clamp(std::atoi(val.c_str()), 0, 2);
         else if (key == "export_terrain") s.export_terrain = (val == "true" || val == "1");
+        else if (key == "export_tileset_png") s.export_tileset_png = (val == "true" || val == "1");
+        else if (key == "export_tileset_proj") s.export_tileset_proj = (val == "true" || val == "1");
         else if (key == "window_x") s.window_x = std::atoi(val.c_str());
         else if (key == "window_y") s.window_y = std::atoi(val.c_str());
         else if (key == "window_w") s.window_w = std::max(std::atoi(val.c_str()), 640);
