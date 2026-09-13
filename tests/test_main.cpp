@@ -415,6 +415,7 @@ void test_io_and_settings() {
     s.zoom = 3.5f;
     s.brush_size = 3;
     s.paint_mode = 1; // Stamp
+    s.sidebar_page = 2; // Export
     s.window_x = 120;
     s.window_y = 150;
     s.window_w = 1400;
@@ -437,6 +438,7 @@ void test_io_and_settings() {
     expect(std::fabs(s2.zoom - 3.5f) < 0.01f, "settings zoom");
     expect(s2.brush_size == 3, "settings brush_size");
     expect(s2.paint_mode == 1, "settings paint_mode stamp");
+    expect(s2.sidebar_page == 2, "settings sidebar_page export");
     expect(s2.window_x == 120 && s2.window_y == 150, "settings window_x and window_y");
     expect(s2.window_w == 1400 && s2.window_h == 900, "settings window_w and window_h");
     expect(s2.window_maximized, "settings window_maximized");
@@ -452,7 +454,7 @@ void test_io_and_settings() {
     expect(save_settings_file(s, s_file), "save settings file");
     Settings s3;
     expect(load_settings_file(s3, s_file), "load settings file");
-    expect(!s3.dark && s3.brush_size == 3 && s3.paint_mode == 1, "loaded settings file content matches");
+    expect(!s3.dark && s3.brush_size == 3 && s3.paint_mode == 1 && s3.sidebar_page == 2, "loaded settings file content matches");
     std::remove(s_file.c_str());
 
     // Test platform config directory resolution

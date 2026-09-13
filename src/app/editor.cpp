@@ -33,6 +33,7 @@ namespace tmm {
 enum class AppView { Tilemap, TilesetMaker };
 enum class Tool { Paint, Line, Erase, Rect, Fill, Select, Eyedropper };
 enum class TilesetSidebarMode { Stamp, Collision, Variants };
+enum class SidebarPage { Tileset = 0, MapProperties = 1, Export = 2 };
 
 struct EditorState {
     AppView current_view = AppView::Tilemap;
@@ -41,6 +42,7 @@ struct EditorState {
     TilemapDoc doc;
     Settings settings;
 
+    SidebarPage sidebar_page = SidebarPage::Tileset;
     TilesetSidebarMode tileset_mode = TilesetSidebarMode::Stamp;
     uint8_t active_collision_type = 1;
     Cell hovered_col_tile = {-1, -1};
@@ -391,6 +393,7 @@ static void persist_settings(SDL_Window* window) {
     g_ed.settings.zoom = g_ed.zoom;
     g_ed.settings.brush_size = 1;
     g_ed.settings.paint_mode = 0; // Default to Terrain mode
+    g_ed.settings.sidebar_page = static_cast<int>(g_ed.sidebar_page);
     if (!g_ed.current_map_path.empty()) {
         g_ed.settings.last_map_path = g_ed.current_map_path;
     }
@@ -1873,10 +1876,9 @@ static void draw_canvas_viewport_content() {
     draw_list->PopClipRect();
 }
 
-static void draw_sidebar_content(SDL_Renderer* renderer) {
+static void draw_sidebar_tileset_page(SDL_Renderer* renderer) {
     const ImVec4 sec_hdr_col = g_ed.settings.dark ? ImVec4(0.4f, 0.75f, 1.0f, 1.0f) : ImVec4(0.12f, 0.45f, 0.85f, 1.0f);
 
-    // 1. Tileset Section
     ImGui::TextColored(sec_hdr_col, "TILESET");
     if (ImGui::Button("Import Tileset...", ImVec2(-1, 0))) {
         open_tileset_dialog(renderer);
@@ -1948,50 +1950,30 @@ static void draw_sidebar_content(SDL_Renderer* renderer) {
             const int cols = g_ed.doc.tileset.cols;
             const int rows = g_ed.doc.tileset.rows;
             const float spacing = 1.0f;
-            const ImGuiStyle& style = ImGui::GetStyle();
-            const ImVec2 child_pad(4.0f, 4.0f);
-            const float border_size = style.ChildBorderSize;
-
-            const float total_gaps_x = (cols > 1) ? static_cast<float>(cols - 1) * spacing : 0.0f;
-            const float total_gaps_y = (rows > 1) ? static_cast<float>(rows - 1) * spacing : 0.0f;
+            const float border_size = 1.0f;
+            const float pad_x = 4.0f;
+            const float pad_y = 4.0f;
             const float outer_w = ImGui::GetContentRegionAvail().x;
-            const float extra_controls_h = (g_ed.tileset_mode == TilesetSidebarMode::Stamp) ? (70.0f * g_ed.settings.scale) : (270.0f * g_ed.settings.scale);
-            const float avail_sidebar_h = std::max(100.0f * g_ed.settings.scale, ImGui::GetContentRegionAvail().y - extra_controls_h);
-            const TilesetPreviewLayout layout = compute_tileset_preview_layout(
-                outer_w, avail_sidebar_h, cols, rows, spacing,
-                child_pad.x, child_pad.y, border_size, style.ScrollbarSize);
+            const float avail_sidebar_h = ImGui::GetContentRegionAvail().y;
 
-            ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, child_pad);
-            ImGuiWindowFlags child_flags = ImGuiWindowFlags_None;
-            if (!layout.needs_vscroll) {
-                child_flags |= ImGuiWindowFlags_NoScrollbar;
-            }
+            const TilesetPreviewLayout layout = compute_tileset_preview_layout(outer_w, avail_sidebar_h, cols, rows, spacing, pad_x, pad_y, border_size);
+            const float tile_ui_size = layout.tile_ui_size;
+            const float total_w = layout.total_w;
+            const float total_h = layout.total_h;
 
-            ImGui::BeginChild("AtlasScroll##Grid", ImVec2(0, layout.child_h), ImGuiChildFlags_Borders, child_flags);
+            const ImGuiWindowFlags child_flags = layout.needs_vscroll ? ImGuiWindowFlags_None : (ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+            ImGui::BeginChild("TilesetPaletteChild", ImVec2(0, layout.child_h), true, child_flags);
 
-            // Re-read exact inner width inside the child window
-            const float actual_inner_w = ImGui::GetContentRegionAvail().x;
-            const float tile_ui_size = std::max(1.0f, (actual_inner_w - total_gaps_x) / static_cast<float>(cols));
-            const float actual_total_w = actual_inner_w;
-            const float total_h = static_cast<float>(rows) * tile_ui_size + total_gaps_y;
-
-            const ImVec2 p0 = ImGui::GetCursorScreenPos();
-            ImGui::Dummy(ImVec2(actual_total_w, total_h));
-
-            const bool grid_hovered = ImGui::IsItemHovered();
-            const ImGuiIO& io = ImGui::GetIO();
             ImDrawList* dl = ImGui::GetWindowDrawList();
-            const ImGuiPlatformIO& platform_io = ImGui::GetPlatformIO();
-            if (platform_io.DrawCallback_SetSamplerNearest != nullptr) {
-                dl->AddCallback(platform_io.DrawCallback_SetSamplerNearest, nullptr);
-            }
+            const ImVec2 origin = ImGui::GetCursorScreenPos();
+            const ImVec2 mouse = ImGui::GetIO().MousePos;
 
-            const float sel_thick = std::clamp(tile_ui_size * 0.08f, 1.5f, 2.5f);
-
+            Cell current_hover = {-1, -1};
+            Cell current_terrain_hover = {-1, -1};
             for (int r = 0; r < rows; ++r) {
                 for (int c = 0; c < cols; ++c) {
-                    const float x0 = p0.x + c * (tile_ui_size + spacing);
-                    const float y0 = p0.y + r * (tile_ui_size + spacing);
+                    const float x0 = origin.x + static_cast<float>(c) * (tile_ui_size + spacing);
+                    const float y0 = origin.y + static_cast<float>(r) * (tile_ui_size + spacing);
                     const float x1 = x0 + tile_ui_size;
                     const float y1 = y0 + tile_ui_size;
 
@@ -2000,402 +1982,297 @@ static void draw_sidebar_content(SDL_Renderer* renderer) {
                     const float u1 = static_cast<float>((c + 1) * g_ed.doc.tileset.tile_size) / static_cast<float>(g_ed.texture_w);
                     const float v1 = static_cast<float>((r + 1) * g_ed.doc.tileset.tile_size) / static_cast<float>(g_ed.texture_h);
 
-                    dl->AddRectFilled(ImVec2(x0, y0), ImVec2(x1, y1), g_ed.settings.dark ? IM_COL32(30, 32, 36, 255) : IM_COL32(230, 233, 238, 255));
                     dl->AddImage(reinterpret_cast<ImTextureID>(g_ed.tileset_texture),
-                                 ImVec2(x0, y0), ImVec2(x1, y1), ImVec2(u0, v0), ImVec2(u1, v1));
+                                 ImVec2(x0, y0), ImVec2(x1, y1),
+                                 ImVec2(u0, v0), ImVec2(u1, v1));
 
-                    if (g_ed.tileset_mode == TilesetSidebarMode::Stamp) {
-                        const bool is_stamp_sel = (g_ed.stamp_col == c && g_ed.stamp_row == r);
-                        if (is_stamp_sel) {
-                            dl->AddRect(ImVec2(x0 - 1, y0 - 1), ImVec2(x1 + 1, y1 + 1), IM_COL32(255, 220, 40, 255), 0, 0, sel_thick);
-                        } else if (g_ed.doc.tileset.is_extra(c, r)) {
-                            dl->AddRect(ImVec2(x0, y0), ImVec2(x1, y1), IM_COL32(140, 90, 220, 160), 0, 0, 1.0f);
+                    if (c == 10 && r == 1) {
+                        dl->AddRectFilled(ImVec2(x0, y0), ImVec2(x1, y1), IM_COL32(18, 20, 26, 215));
+                        dl->AddLine(ImVec2(x0, y0), ImVec2(x1, y1), IM_COL32(230, 60, 60, 200), 1.5f);
+                        dl->AddLine(ImVec2(x1, y0), ImVec2(x0, y1), IM_COL32(230, 60, 60, 200), 1.5f);
+                    }
+
+                    if (mouse.x >= x0 && mouse.x < x1 && mouse.y >= y0 && mouse.y < y1 && ImGui::IsWindowHovered()) {
+                        if (g_ed.tileset_mode == TilesetSidebarMode::Stamp) {
+                            dl->AddRect(ImVec2(x0, y0), ImVec2(x1, y1), IM_COL32(255, 255, 0, 255), 0.0f, 0, 2.0f);
+                        } else if (g_ed.tileset_mode == TilesetSidebarMode::Collision) {
+                            current_hover = {c, r};
+                        } else if (g_ed.tileset_mode == TilesetSidebarMode::Variants) {
+                            current_terrain_hover = {c, r};
                         }
-                        const uint8_t tile_col = g_ed.doc.tileset.get_tile_collision(c, r);
-                        if (tile_col != 0) {
-                            const CollisionType* ct = g_ed.doc.get_collision_type(tile_col);
-                            const Rgb cr = ct ? ct->color : Rgb{235, 60, 50};
-                            const float dot_sz = std::clamp(std::floor(tile_ui_size * 0.25f), 2.0f, 6.0f);
-                            const float dot_pad = std::clamp(std::floor(tile_ui_size * 0.05f), 1.0f, 2.0f);
-                            dl->AddRectFilled(ImVec2(x1 - dot_sz - dot_pad, y1 - dot_sz - dot_pad),
-                                              ImVec2(x1 - dot_pad, y1 - dot_pad),
-                                              IM_COL32(cr.r, cr.g, cr.b, 220));
-                        }
-                    } else if (g_ed.tileset_mode == TilesetSidebarMode::Collision) {
-                        if (c == 10 && r == 1) {
-                            // Protected empty background tile
-                            dl->AddLine(ImVec2(x0, y0), ImVec2(x1, y1), IM_COL32(160, 160, 160, 140), 1.0f);
-                            dl->AddLine(ImVec2(x0, y1), ImVec2(x1, y0), IM_COL32(160, 160, 160, 140), 1.0f);
-                        } else {
-                            const uint8_t tile_col = g_ed.doc.tileset.get_tile_collision(c, r);
-                            if (tile_col != 0) {
-                                const CollisionType* ct = g_ed.doc.get_collision_type(tile_col);
-                                const Rgb cr = ct ? ct->color : Rgb{235, 60, 50};
-                                dl->AddRectFilled(ImVec2(x0, y0), ImVec2(x1, y1), IM_COL32(cr.r, cr.g, cr.b, 90));
-                                dl->AddRect(ImVec2(x0, y0), ImVec2(x1, y1), IM_COL32(cr.r, cr.g, cr.b, 200), 0, 0, 1.0f);
-                                const float dot_sz = std::clamp(std::floor(tile_ui_size * 0.28f), 3.0f, 8.0f);
-                                dl->AddRectFilled(ImVec2(x1 - dot_sz - 1, y1 - dot_sz - 1),
-                                                  ImVec2(x1 - 1, y1 - 1),
-                                                  IM_COL32(cr.r, cr.g, cr.b, 240));
-                            }
+                    }
+
+                    if (g_ed.tileset_mode == TilesetSidebarMode::Collision) {
+                        const uint8_t col_id = g_ed.doc.tileset.get_tile_collision(c, r);
+                        if (col_id != 0) {
+                            const CollisionType* ct = g_ed.doc.get_collision_type(col_id);
+                            const Rgb rgb = ct ? ct->color : Rgb{235, 60, 50};
+                            dl->AddRectFilled(ImVec2(x0, y0), ImVec2(x1, y1), IM_COL32(rgb.r, rgb.g, rgb.b, 90));
+                            dl->AddRect(ImVec2(x0, y0), ImVec2(x1, y1), IM_COL32(rgb.r, rgb.g, rgb.b, 160), 0.0f, 0, 1.0f);
                         }
                     } else if (g_ed.tileset_mode == TilesetSidebarMode::Variants) {
                         const Cell sel = g_ed.selected_terrain_tile;
-                        const bool is_sel = (sel.x == c && sel.y == r);
-
-                        if (Tileset::is_base_origin_tile(c, r)) {
-                            dl->AddRect(ImVec2(x0, y0), ImVec2(x1, y1), IM_COL32(60, 180, 255, 120), 0, 0, 1.0f);
-                        } else if (Tileset::is_variant_tile(c, r)) {
-                            const VariantBinding* vb = g_ed.doc.tileset.find_variant(c, r);
-                            if (vb) {
-                                dl->AddRect(ImVec2(x0, y0), ImVec2(x1, y1), IM_COL32(180, 100, 255, 200), 0, 0, 1.5f);
-                            } else {
-                                dl->AddRect(ImVec2(x0, y0), ImVec2(x1, y1), IM_COL32(100, 100, 100, 90), 0, 0, 1.0f);
-                            }
-                        }
+                        const bool is_sel = (c == sel.x && r == sel.y);
+                        const bool is_orig = (c < 12 && r < 4);
+                        const bool is_extra = (c >= 12);
+                        const bool is_bound_var = g_ed.doc.tileset.is_variant(c, r);
+                        const VariantBinding* sel_vb = g_ed.doc.tileset.find_variant(sel.x, sel.y);
 
                         if (is_sel) {
-                            dl->AddRect(ImVec2(x0 - 1, y0 - 1), ImVec2(x1 + 1, y1 + 1), IM_COL32(255, 220, 40, 255), 0, 0, sel_thick + 0.5f);
-                        } else if (Tileset::is_base_origin_tile(sel.x, sel.y)) {
-                            // If an origin is selected, highlight all its connected variants
-                            const VariantBinding* vb = g_ed.doc.tileset.find_variant(c, r);
-                            if (vb && vb->root_x == sel.x && vb->root_y == sel.y) {
-                                dl->AddRect(ImVec2(x0 - 1, y0 - 1), ImVec2(x1 + 1, y1 + 1), IM_COL32(50, 220, 120, 230), 0, 0, sel_thick);
+                            dl->AddRect(ImVec2(x0 - 1, y0 - 1), ImVec2(x1 + 1, y1 + 1), IM_COL32(255, 230, 40, 255), 0.0f, 0, 2.5f);
+                        }
+                        if (is_orig) {
+                            const int v_count = g_ed.doc.tileset.count_variants_for_root(c, r);
+                            if (v_count > 0) {
+                                dl->AddCircleFilled(ImVec2(x1 - 4, y0 + 4), 3.0f, IM_COL32(60, 230, 90, 240));
                             }
-                        } else if (Tileset::is_variant_tile(sel.x, sel.y)) {
-                            // If a variant is selected, highlight its origin
-                            const VariantBinding* vb = g_ed.doc.tileset.find_variant(sel.x, sel.y);
-                            if (vb && vb->root_x == c && vb->root_y == r) {
-                                dl->AddRect(ImVec2(x0 - 1, y0 - 1), ImVec2(x1 + 1, y1 + 1), IM_COL32(50, 220, 120, 230), 0, 0, sel_thick);
+                            if (sel_vb && sel_vb->root_x == c && sel_vb->root_y == r) {
+                                dl->AddRect(ImVec2(x0, y0), ImVec2(x1, y1), IM_COL32(255, 140, 0, 240), 0.0f, 0, 2.0f);
+                            }
+                        } else if (is_extra) {
+                            if (is_bound_var) {
+                                const VariantBinding* vb = g_ed.doc.tileset.find_variant(c, r);
+                                if (vb && vb->root_x == sel.x && vb->root_y == sel.y) {
+                                    dl->AddRectFilled(ImVec2(x0, y0), ImVec2(x1, y1), IM_COL32(50, 220, 100, 90));
+                                    dl->AddRect(ImVec2(x0, y0), ImVec2(x1, y1), IM_COL32(50, 220, 100, 255), 0.0f, 0, 2.0f);
+                                } else {
+                                    dl->AddRectFilled(ImVec2(x0, y0), ImVec2(x1, y1), IM_COL32(70, 130, 240, 70));
+                                    dl->AddRect(ImVec2(x0, y0), ImVec2(x1, y1), IM_COL32(70, 130, 240, 160), 0.0f, 0, 1.0f);
+                                }
+                            } else {
+                                dl->AddRect(ImVec2(x0, y0), ImVec2(x1, y1), IM_COL32(140, 140, 140, 90), 0.0f, 0, 1.0f);
                             }
                         }
+                    }
+
+                    if (g_ed.tileset_mode == TilesetSidebarMode::Stamp && c == g_ed.stamp_col && r == g_ed.stamp_row) {
+                        dl->AddRect(ImVec2(x0 - 1, y0 - 1), ImVec2(x1 + 1, y1 + 1), IM_COL32(0, 255, 255, 255), 0.0f, 0, 2.0f);
                     }
                 }
             }
 
-            if (platform_io.DrawCallback_SetSamplerLinear != nullptr) {
-                dl->AddCallback(platform_io.DrawCallback_SetSamplerLinear, nullptr);
+            g_ed.hovered_col_tile = current_hover;
+            g_ed.hovered_terrain_tile = current_terrain_hover;
+
+            if (g_ed.tileset_mode == TilesetSidebarMode::Collision && current_hover.x >= 0) {
+                const float x0 = origin.x + static_cast<float>(current_hover.x) * (tile_ui_size + spacing);
+                const float y0 = origin.y + static_cast<float>(current_hover.y) * (tile_ui_size + spacing);
+                const float x1 = x0 + tile_ui_size;
+                const float y1 = y0 + tile_ui_size;
+                const uint8_t hover_col = g_ed.doc.tileset.get_tile_collision(current_hover.x, current_hover.y);
+                const CollisionType* ct = g_ed.doc.get_collision_type(hover_col);
+                const Rgb rgb = ct ? ct->color : (hover_col == 0 ? Rgb{80, 80, 80} : Rgb{235, 60, 50});
+                dl->AddRect(ImVec2(x0, y0), ImVec2(x1, y1), IM_COL32(rgb.r, rgb.g, rgb.b, 255), 0.0f, 0, 2.0f);
             }
 
-            auto apply_col_line = [&](int x0, int y0, int x1, int y1, uint8_t t) {
-                const int dx = std::abs(x1 - x0);
-                const int dy = -std::abs(y1 - y0);
-                const int sx = x0 < x1 ? 1 : -1;
-                const int sy = y0 < y1 ? 1 : -1;
-                int err = dx + dy;
-                int cx = x0, cy = y0;
-                while (true) {
-                    if (cx >= 0 && cy >= 0 && cx < cols && cy < rows) {
-                        if (g_ed.doc.tileset.get_tile_collision(cx, cy) != t) {
-                            g_ed.doc.tileset.set_tile_collision(cx, cy, t);
-                            g_ed.doc.mark_dirty();
+            if (g_ed.tileset_mode == TilesetSidebarMode::Variants && current_terrain_hover.x >= 0) {
+                const float x0 = origin.x + static_cast<float>(current_terrain_hover.x) * (tile_ui_size + spacing);
+                const float y0 = origin.y + static_cast<float>(current_terrain_hover.y) * (tile_ui_size + spacing);
+                const float x1 = x0 + tile_ui_size;
+                const float y1 = y0 + tile_ui_size;
+                dl->AddRect(ImVec2(x0, y0), ImVec2(x1, y1), IM_COL32(255, 255, 255, 200), 0.0f, 0, 1.5f);
+            }
+
+            ImGui::InvisibleButton("palette_hitbox", ImVec2(total_w, total_h));
+            if (ImGui::IsItemActive() || ImGui::IsItemHovered()) {
+                const ImVec2 click = ImGui::GetIO().MousePos;
+                const int hit_c = static_cast<int>((click.x - origin.x) / (tile_ui_size + spacing));
+                const int hit_r = static_cast<int>((click.y - origin.y) / (tile_ui_size + spacing));
+                if (hit_c >= 0 && hit_c < cols && hit_r >= 0 && hit_r < rows) {
+                    if (g_ed.tileset_mode == TilesetSidebarMode::Stamp) {
+                        if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+                            g_ed.stamp_col = hit_c;
+                            g_ed.stamp_row = hit_r;
+                            g_ed.paint_mode = TileMode::Stamp;
+                            g_ed.status_msg = "Selected Stamp Tile (" + std::to_string(hit_c) + ", " + std::to_string(hit_r) + ").";
                         }
-                    }
-                    if (cx == x1 && cy == y1) break;
-                    const int e2 = 2 * err;
-                    if (e2 >= dy) { err += dy; cx += sx; }
-                    if (e2 <= dx) { err += dx; cy += sy; }
-                }
-            };
+                    } else if (g_ed.tileset_mode == TilesetSidebarMode::Collision) {
+                        const bool left = ImGui::IsMouseDown(ImGuiMouseButton_Left);
+                        const bool right = ImGui::IsMouseDown(ImGuiMouseButton_Right);
+                        if (left || right) {
+                            if (hit_c != 10 || hit_r != 1) {
+                                const Cell cur_tile = {hit_c, hit_r};
+                                if (cur_tile != g_ed.last_col_painted) {
+                                    const uint8_t new_t = left ? g_ed.active_collision_type : 0;
+                                    g_ed.doc.tileset.set_tile_collision(hit_c, hit_r, new_t);
+                                    g_ed.doc.mark_dirty();
+                                    g_ed.last_col_painted = cur_tile;
+                                    const CollisionType* ct = g_ed.doc.get_collision_type(new_t);
+                                    const std::string name = ct ? ct->name : (new_t == 0 ? "None" : "Solid");
+                                    g_ed.status_msg = "Set collision on (" + std::to_string(hit_c) + ", " + std::to_string(hit_r) + ") to " + name;
+                                }
+                            }
+                        }
+                    } else if (g_ed.tileset_mode == TilesetSidebarMode::Variants) {
+                        if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+                            const int hover_c = hit_c;
+                            const int hover_r = hit_r;
+                            const bool shift = ImGui::GetIO().KeyShift;
+                            const Cell sel = g_ed.selected_terrain_tile;
 
-            if (grid_hovered) {
-                int hover_c = static_cast<int>((io.MousePos.x - p0.x) / (tile_ui_size + spacing));
-                int hover_r = static_cast<int>((io.MousePos.y - p0.y) / (tile_ui_size + spacing));
-                hover_c = std::clamp(hover_c, 0, cols - 1);
-                hover_r = std::clamp(hover_r, 0, rows - 1);
-
-                const float hx0 = p0.x + hover_c * (tile_ui_size + spacing);
-                const float hy0 = p0.y + hover_r * (tile_ui_size + spacing);
-                const float hov_thick = std::clamp(tile_ui_size * 0.06f, 1.0f, 2.0f);
-                dl->AddRect(ImVec2(hx0, hy0), ImVec2(hx0 + tile_ui_size, hy0 + tile_ui_size),
-                            IM_COL32(255, 255, 255, 180), 0, 0, hov_thick);
-
-                if (g_ed.tileset_mode == TilesetSidebarMode::Stamp) {
-                    if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
-                        g_ed.stamp_col = hover_c;
-                        g_ed.stamp_row = hover_r;
-                        g_ed.paint_mode = TileMode::Stamp;
-                        g_ed.status_msg = "Selected stamp tile (" + std::to_string(hover_c) + ", " + std::to_string(hover_r) + ")";
-                    }
-                    const uint8_t tc = g_ed.doc.tileset.get_tile_collision(hover_c, hover_r);
-                    const CollisionType* ct = g_ed.doc.get_collision_type(tc);
-                    const std::string col_str = (tc == 0) ? "None" : (ct ? ct->name : "Type " + std::to_string(tc));
-                    if (hover_c == 10 && hover_r == 1) {
-                        ImGui::SetTooltip("Tile (10, 1) [Empty / Background]\nCollision: None (Always empty / no collision)");
-                    } else {
-                        ImGui::SetTooltip("Tile (%d, %d)%s [Col: %s]", hover_c, hover_r,
-                                          g_ed.doc.tileset.is_extra(hover_c, hover_r) ? " [Variant]" : "",
-                                          col_str.c_str());
-                    }
-                } else if (g_ed.tileset_mode == TilesetSidebarMode::Collision) {
-                    const bool left_down = io.MouseDown[ImGuiMouseButton_Left];
-                    const bool right_down = io.MouseDown[ImGuiMouseButton_Right];
-                    if (left_down || right_down) {
-                        const uint8_t paint_col_val = left_down ? g_ed.active_collision_type : 0;
-                        const int prev_x = (g_ed.last_col_painted.x >= 0) ? g_ed.last_col_painted.x : hover_c;
-                        const int prev_y = (g_ed.last_col_painted.y >= 0) ? g_ed.last_col_painted.y : hover_r;
-                        apply_col_line(prev_x, prev_y, hover_c, hover_r, paint_col_val);
-                        g_ed.last_col_painted = {hover_c, hover_r};
-                    } else {
-                        g_ed.last_col_painted = {-1, -1};
-                    }
-
-                    const uint8_t tc = g_ed.doc.tileset.get_tile_collision(hover_c, hover_r);
-                    const CollisionType* ct = g_ed.doc.get_collision_type(tc);
-                    const std::string cur_name = (tc == 0) ? "None" : (ct ? ct->name : "Type " + std::to_string(tc));
-                    const CollisionType* act = g_ed.doc.get_collision_type(g_ed.active_collision_type);
-                    const std::string act_name = (g_ed.active_collision_type == 0) ? "None" : (act ? act->name : "Type " + std::to_string(g_ed.active_collision_type));
-
-                    if (hover_c == 10 && hover_r == 1) {
-                        ImGui::SetTooltip("Tile (10, 1) [Empty / Background]\nCollision: None (Protected)");
-                    } else {
-                        ImGui::SetTooltip("Tile (%d, %d)\nCollision: %s\nLeft-drag: Set to %s\nRight-drag: Clear (None)",
-                                          hover_c, hover_r, cur_name.c_str(), act_name.c_str());
-                    }
-                } else if (g_ed.tileset_mode == TilesetSidebarMode::Variants) {
-                    const bool is_shift_down = io.KeyShift || (io.KeyMods & ImGuiMod_Shift);
-                    const Cell sel = g_ed.selected_terrain_tile;
-
-                    if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
-                        if (is_shift_down) {
-                            if (Tileset::is_base_origin_tile(sel.x, sel.y)) {
-                                if (Tileset::is_variant_tile(hover_c, hover_r)) {
-                                    const VariantBinding* cur_vb = g_ed.doc.tileset.find_variant(hover_c, hover_r);
-                                    if (cur_vb && cur_vb->root_x == sel.x && cur_vb->root_y == sel.y) {
+                            if (shift) {
+                                if (Tileset::is_base_origin_tile(sel.x, sel.y) && Tileset::is_variant_tile(hover_c, hover_r)) {
+                                    const VariantBinding* existing = g_ed.doc.tileset.find_variant(hover_c, hover_r);
+                                    if (existing && existing->root_x == sel.x && existing->root_y == sel.y) {
                                         g_ed.doc.tileset.remove_variant(hover_c, hover_r);
                                         g_ed.doc.mark_dirty();
                                         g_ed.doc.solve_all_autotiles();
-                                        g_ed.status_msg = "Disconnected variant (" + std::to_string(hover_c) + ", " + std::to_string(hover_r) + ") from Origin (" + std::to_string(sel.x) + ", " + std::to_string(sel.y) + ").";
+                                        g_ed.status_msg = "Disconnected variant (" + std::to_string(hover_c) + ", " + std::to_string(hover_r) + ").";
                                     } else {
                                         g_ed.doc.tileset.set_variant(hover_c, hover_r, sel.x, sel.y, g_ed.terrain_variant_prob);
                                         g_ed.doc.mark_dirty();
                                         g_ed.doc.solve_all_autotiles();
-                                        g_ed.status_msg = "Attached variant (" + std::to_string(hover_c) + ", " + std::to_string(hover_r) + ") to Origin (" + std::to_string(sel.x) + ", " + std::to_string(sel.y) + ").";
+                                        g_ed.status_msg = "Assigned extra tile (" + std::to_string(hover_c) + ", " + std::to_string(hover_r) +
+                                                          ") as variant of Origin (" + std::to_string(sel.x) + ", " + std::to_string(sel.y) + ").";
                                     }
-                                } else if (hover_c == sel.x && hover_r == sel.y) {
-                                    const int n = g_ed.doc.tileset.count_variants_for_root(sel.x, sel.y);
-                                    if (n > 0) {
-                                        g_ed.doc.tileset.remove_variants_for_root(sel.x, sel.y);
-                                        g_ed.doc.mark_dirty();
-                                        g_ed.doc.solve_all_autotiles();
-                                        g_ed.status_msg = "Cleared all " + std::to_string(n) + " variants for Origin (" + std::to_string(sel.x) + ", " + std::to_string(sel.y) + ").";
-                                    }
-                                } else if (Tileset::is_base_origin_tile(hover_c, hover_r)) {
                                     g_ed.selected_terrain_tile = {hover_c, hover_r};
-                                }
-                            } else if (Tileset::is_variant_tile(sel.x, sel.y)) {
-                                if (Tileset::is_base_origin_tile(hover_c, hover_r)) {
-                                    const VariantBinding* cur_vb = g_ed.doc.tileset.find_variant(sel.x, sel.y);
-                                    if (cur_vb && cur_vb->root_x == hover_c && cur_vb->root_y == hover_r) {
+                                } else if (Tileset::is_variant_tile(sel.x, sel.y) && Tileset::is_base_origin_tile(hover_c, hover_r)) {
+                                    const VariantBinding* existing = g_ed.doc.tileset.find_variant(sel.x, sel.y);
+                                    if (existing && existing->root_x == hover_c && existing->root_y == hover_r) {
                                         g_ed.doc.tileset.remove_variant(sel.x, sel.y);
                                         g_ed.doc.mark_dirty();
                                         g_ed.doc.solve_all_autotiles();
-                                        g_ed.status_msg = "Disconnected variant (" + std::to_string(sel.x) + ", " + std::to_string(sel.y) + ") from Origin (" + std::to_string(hover_c) + ", " + std::to_string(hover_r) + ").";
+                                        g_ed.status_msg = "Disconnected variant (" + std::to_string(sel.x) + ", " + std::to_string(sel.y) + ").";
                                     } else {
                                         g_ed.doc.tileset.set_variant(sel.x, sel.y, hover_c, hover_r, g_ed.terrain_variant_prob);
                                         g_ed.doc.mark_dirty();
                                         g_ed.doc.solve_all_autotiles();
-                                        g_ed.status_msg = "Attached variant (" + std::to_string(sel.x) + ", " + std::to_string(sel.y) + ") to Origin (" + std::to_string(hover_c) + ", " + std::to_string(hover_r) + ").";
+                                        g_ed.status_msg = "Assigned extra tile (" + std::to_string(sel.x) + ", " + std::to_string(sel.y) +
+                                                          ") as variant of Origin (" + std::to_string(hover_c) + ", " + std::to_string(hover_r) + ").";
                                     }
-                                } else if (Tileset::is_variant_tile(hover_c, hover_r)) {
                                     g_ed.selected_terrain_tile = {hover_c, hover_r};
                                 }
-                            }
-                        } else {
-                            g_ed.selected_terrain_tile = {hover_c, hover_r};
-                            g_ed.status_msg = "Selected tile (" + std::to_string(hover_c) + ", " + std::to_string(hover_r) + ")";
-                        }
-                    } else if (ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
-                        if (Tileset::is_variant_tile(hover_c, hover_r)) {
-                            if (g_ed.doc.tileset.find_variant(hover_c, hover_r)) {
-                                g_ed.doc.tileset.remove_variant(hover_c, hover_r);
-                                g_ed.doc.mark_dirty();
-                                g_ed.doc.solve_all_autotiles();
-                                g_ed.status_msg = "Removed variant (" + std::to_string(hover_c) + ", " + std::to_string(hover_r) + ").";
-                            }
-                        } else if (Tileset::is_base_origin_tile(hover_c, hover_r)) {
-                            const int cnt = g_ed.doc.tileset.count_variants_for_root(hover_c, hover_r);
-                            if (cnt > 0) {
-                                g_ed.doc.tileset.remove_variants_for_root(hover_c, hover_r);
-                                g_ed.doc.mark_dirty();
-                                g_ed.doc.solve_all_autotiles();
-                                g_ed.status_msg = "Cleared variants for Origin (" + std::to_string(hover_c) + ", " + std::to_string(hover_r) + ").";
+                            } else {
+                                g_ed.selected_terrain_tile = {hover_c, hover_r};
+                                if (Tileset::is_base_origin_tile(hover_c, hover_r)) {
+                                    const int n_vars = g_ed.doc.tileset.count_variants_for_root(hover_c, hover_r);
+                                    g_ed.status_msg = "Selected Origin tile (" + std::to_string(hover_c) + ", " + std::to_string(hover_r) + ") with " + std::to_string(n_vars) + " variant(s).";
+                                } else {
+                                    const VariantBinding* vb = g_ed.doc.tileset.find_variant(hover_c, hover_r);
+                                    if (vb) {
+                                        g_ed.status_msg = "Selected Variant (" + std::to_string(hover_c) + ", " + std::to_string(hover_r) + ") bound to Origin (" + std::to_string(vb->root_x) + ", " + std::to_string(vb->root_y) + ").";
+                                    } else {
+                                        g_ed.status_msg = "Selected unassigned extra tile (" + std::to_string(hover_c) + ", " + std::to_string(hover_r) + ").";
+                                    }
+                                }
                             }
                         }
                     }
-
-                    if (is_shift_down) {
-                        if (Tileset::is_base_origin_tile(sel.x, sel.y)) {
-                            if (Tileset::is_variant_tile(hover_c, hover_r)) {
-                                const VariantBinding* cur_vb = g_ed.doc.tileset.find_variant(hover_c, hover_r);
-                                if (cur_vb && cur_vb->root_x == sel.x && cur_vb->root_y == sel.y) {
-                                    ImGui::SetTooltip("SHIFT + Click: Disconnect variant (%d, %d) from Origin (%d, %d)", hover_c, hover_r, sel.x, sel.y);
-                                } else {
-                                    ImGui::SetTooltip("SHIFT + Click: Attach variant (%d, %d) to Origin (%d, %d)", hover_c, hover_r, sel.x, sel.y);
-                                }
-                            } else if (hover_c == sel.x && hover_r == sel.y) {
-                                const int n = g_ed.doc.tileset.count_variants_for_root(sel.x, sel.y);
-                                ImGui::SetTooltip("SHIFT + Click: Clear all %d variant(s) for Origin (%d, %d)", n, sel.x, sel.y);
-                            } else {
-                                ImGui::SetTooltip("Click: Select Origin (%d, %d)", hover_c, hover_r);
-                            }
-                        } else if (Tileset::is_variant_tile(sel.x, sel.y)) {
-                            if (Tileset::is_base_origin_tile(hover_c, hover_r)) {
-                                const VariantBinding* cur_vb = g_ed.doc.tileset.find_variant(sel.x, sel.y);
-                                if (cur_vb && cur_vb->root_x == hover_c && cur_vb->root_y == hover_r) {
-                                    ImGui::SetTooltip("SHIFT + Click: Disconnect variant (%d, %d) from Origin (%d, %d)", sel.x, sel.y, hover_c, hover_r);
-                                } else {
-                                    ImGui::SetTooltip("SHIFT + Click: Attach variant (%d, %d) to Origin (%d, %d)", sel.x, sel.y, hover_c, hover_r);
-                                }
-                            } else {
-                                ImGui::SetTooltip("Click: Select tile (%d, %d)", hover_c, hover_r);
-                            }
-                        } else {
-                            ImGui::SetTooltip("Tile (%d, %d) (Click to select)", hover_c, hover_r);
-                        }
-                    } else {
-                        if (Tileset::is_base_origin_tile(hover_c, hover_r)) {
-                            const int cnt = g_ed.doc.tileset.count_variants_for_root(hover_c, hover_r);
-                            ImGui::SetTooltip("Origin (%d, %d) [%d variant%s]\nClick to select (Shift+Click to connect/disconnect)",
-                                              hover_c, hover_r, cnt, cnt == 1 ? "" : "s");
-                        } else if (Tileset::is_variant_tile(hover_c, hover_r)) {
-                            const VariantBinding* vb = g_ed.doc.tileset.find_variant(hover_c, hover_r);
-                            if (vb) {
-                                ImGui::SetTooltip("Variant (%d, %d) -> Origin (%d, %d) [%d%%]\nClick to select | R-click to disconnect",
-                                                  hover_c, hover_r, vb->root_x, vb->root_y, static_cast<int>(std::round(vb->probability * 100.0f)));
-                            } else {
-                                ImGui::SetTooltip("Extra Tile (%d, %d) [Unassigned]\nClick to select | Shift+Click with Origin to attach",
-                                                  hover_c, hover_r);
-                            }
-                        }
-                    }
-                }
-            } else {
-                if (!io.MouseDown[ImGuiMouseButton_Left] && !io.MouseDown[ImGuiMouseButton_Right]) {
-                    g_ed.last_col_painted = {-1, -1};
                 }
             }
-
+            if (!ImGui::IsMouseDown(ImGuiMouseButton_Left) && !ImGui::IsMouseDown(ImGuiMouseButton_Right)) {
+                g_ed.last_col_painted = {-1, -1};
+            }
             ImGui::EndChild();
-            ImGui::PopStyleVar();
-        } else {
-            ImGui::TextDisabled("Tileset preview unavailable.");
         }
 
-        // Sub-panels below tileset preview based on tileset_mode
         if (g_ed.tileset_mode == TilesetSidebarMode::Stamp) {
             ImGui::Spacing();
             ImGui::Text("Selected Stamp: (%d, %d)", g_ed.stamp_col, g_ed.stamp_row);
-            ImGui::SameLine();
-            if (ImGui::SmallButton("Set Paint to Stamp")) {
-                g_ed.paint_mode = TileMode::Stamp;
+            if (g_ed.stamp_col == 10 && g_ed.stamp_row == 1) {
+                ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "Tile (10, 1) is the Empty / Eraser Tile.");
             }
         } else if (g_ed.tileset_mode == TilesetSidebarMode::Collision) {
             ImGui::Spacing();
             ImGui::Separator();
-            ImGui::TextColored(sec_hdr_col, "COLLISION PALETTE");
+            ImGui::TextColored(sec_hdr_col, "COLLISION TYPES");
 
-            // Palette buttons: 0: None, and each collision type
-            {
-                const bool is_none_active = (g_ed.active_collision_type == 0);
-                ScopedStyleColor col(ImGuiCol_Button, ImVec4(0.45f, 0.48f, 0.52f, 1.0f), is_none_active);
-                if (ImGui::Button("0: None")) {
-                    g_ed.active_collision_type = 0;
-                }
-                if (ImGui::IsItemHovered()) {
-                    ImGui::SetTooltip("Clear collision (None / 0)");
-                }
+            // Add Type Button
+            if (ImGui::Button("+ Add Type", ImVec2(-1, 0))) {
+                const uint8_t new_id = g_ed.doc.add_collision_type();
+                g_ed.active_collision_type = new_id;
+                g_ed.doc.mark_dirty();
             }
-            ImGui::SameLine();
 
-            int btn_count = 1;
-            for (const auto& ct : g_ed.doc.collision_types) {
-                if (btn_count % 4 == 0) {
-                    ImGui::NewLine();
-                } else {
-                    ImGui::SameLine();
-                }
-                btn_count++;
+            ImGui::Spacing();
+            const float avail_w = ImGui::GetContentRegionAvail().x;
+            const float color_bar_w = 18.0f * g_ed.settings.scale;
+            const float del_btn_w = 26.0f * g_ed.settings.scale;
 
+            // Collision Types List
+            for (size_t i = 0; i < g_ed.doc.collision_types.size(); ++i) {
+                const auto ct = g_ed.doc.collision_types[i];
                 const bool is_active = (g_ed.active_collision_type == ct.id);
-                const ImVec4 btn_col(ct.color.r / 255.0f, ct.color.g / 255.0f, ct.color.b / 255.0f, is_active ? 1.0f : 0.65f);
 
-                ImGui::PushStyleColor(ImGuiCol_Button, btn_col);
-                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, is_active ? btn_col : ImVec4(btn_col.x, btn_col.y, btn_col.z, 0.85f));
-                ImGui::PushStyleColor(ImGuiCol_ButtonActive, btn_col);
-                if (is_active) {
-                    ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 2.0f);
-                    ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(1.0f, 1.0f, 1.0f, 1.0f));
+                ImGui::PushID(static_cast<int>(ct.id));
+
+                // 1. Color Preview / Picker
+                float col_f[3] = { ct.color.r / 255.0f, ct.color.g / 255.0f, ct.color.b / 255.0f };
+                if (ImGui::ColorEdit3("##color", col_f, ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoLabel)) {
+                    g_ed.doc.set_collision_type_color(ct.id, Rgb{
+                        static_cast<uint8_t>(col_f[0] * 255.0f),
+                        static_cast<uint8_t>(col_f[1] * 255.0f),
+                        static_cast<uint8_t>(col_f[2] * 255.0f)
+                    });
                 }
+                ImGui::SameLine(0, 4);
 
-                const std::string btn_label = std::to_string(ct.id) + ": " + ct.name + "##ColBtn" + std::to_string(ct.id);
-                if (ImGui::Button(btn_label.c_str())) {
-                    g_ed.active_collision_type = ct.id;
-                }
+                // 2. Select / Activate Button
+                char type_label[64];
+                std::snprintf(type_label, sizeof(type_label), "%d: %s", ct.id, ct.name.c_str());
+                const float sel_btn_w = avail_w - color_bar_w - (ct.id > 1 ? (del_btn_w + 8.0f) : 4.0f);
 
-                if (is_active) {
-                    ImGui::PopStyleColor();
-                    ImGui::PopStyleVar();
-                }
-                ImGui::PopStyleColor(3);
-            }
-
-            if (g_ed.doc.collision_types.size() < 13) {
-                ImGui::SameLine();
-                if (ImGui::Button("+ Add")) {
-                    const uint8_t new_id = g_ed.doc.add_collision_type();
-                    if (new_id > 0) {
-                        g_ed.active_collision_type = new_id;
-                        const CollisionType* added_ct = g_ed.doc.get_collision_type(new_id);
-                        g_ed.status_msg = "Added collision type: " + (added_ct ? added_ct->name : ("Type " + std::to_string(new_id)));
+                {
+                    ScopedStyleColor active_col(ImGuiCol_Button, ImVec4(0.20f, 0.52f, 0.88f, 1.0f), is_active);
+                    if (ImGui::Button(type_label, ImVec2(sel_btn_w, 0))) {
+                        g_ed.active_collision_type = ct.id;
                     }
                 }
+
+                // 3. Delete Button (types > 1 only)
+                if (ct.id > 1) {
+                    ImGui::SameLine(0, 4);
+                    ScopedStyleColor del_col(ImGuiCol_Button, ImVec4(0.7f, 0.2f, 0.2f, 1.0f));
+                    if (ImGui::Button("X", ImVec2(del_btn_w, 0))) {
+                        const uint8_t dead_id = ct.id;
+                        g_ed.doc.remove_collision_type(dead_id);
+                        if (g_ed.active_collision_type == dead_id) {
+                            g_ed.active_collision_type = 1;
+                        }
+                        ImGui::PopID();
+                        break;
+                    }
+                    if (ImGui::IsItemHovered()) {
+                        ImGui::SetTooltip("Delete collision type (reverts painted tiles of this type to 0)");
+                    }
+                }
+
+                ImGui::PopID();
             }
 
-            // Edit active collision type
-            CollisionType* active_ct = (g_ed.active_collision_type > 0) ? g_ed.doc.get_collision_type(g_ed.active_collision_type) : nullptr;
+            // Edit Active Type Name
+            CollisionType* active_ct = g_ed.doc.get_collision_type(g_ed.active_collision_type);
             if (active_ct) {
                 ImGui::Spacing();
-                ImGui::Text("Active Type %d: %s", active_ct->id, active_ct->name.c_str());
-
-                char name_buf[64];
-                std::snprintf(name_buf, sizeof(name_buf), "%s", active_ct->name.c_str());
-                ImGui::SetNextItemWidth(140);
-                if (ImGui::InputText("Name##ColName", name_buf, sizeof(name_buf))) {
-                    active_ct->name = name_buf;
+                char edit_name[64];
+                std::snprintf(edit_name, sizeof(edit_name), "%s", active_ct->name.c_str());
+                ImGui::SetNextItemWidth(-1);
+                if (ImGui::InputText("##EditName", edit_name, sizeof(edit_name))) {
+                    active_ct->name = edit_name;
                     g_ed.doc.mark_dirty();
                 }
-
-                ImGui::SameLine();
-                float col_arr[3] = {active_ct->color.r / 255.0f, active_ct->color.g / 255.0f, active_ct->color.b / 255.0f};
-                ImGui::SetNextItemWidth(80);
-                if (ImGui::ColorEdit3("Color##ColColor", col_arr, ImGuiColorEditFlags_NoInputs)) {
-                    active_ct->color.r = static_cast<uint8_t>(std::clamp(col_arr[0] * 255.0f, 0.0f, 255.0f));
-                    active_ct->color.g = static_cast<uint8_t>(std::clamp(col_arr[1] * 255.0f, 0.0f, 255.0f));
-                    active_ct->color.b = static_cast<uint8_t>(std::clamp(col_arr[2] * 255.0f, 0.0f, 255.0f));
-                    g_ed.doc.mark_dirty();
+                if (ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip("Rename active collision type");
                 }
-            } else {
-                ImGui::Spacing();
-                ImGui::TextDisabled("Active Type: 0 (None / Clear)");
             }
 
-            // Batch tools
+            // Global Collision Actions: Clear All
             ImGui::Spacing();
-            const float half_btn_w = (ImGui::GetContentRegionAvail().x - 4.0f) * 0.5f;
-            if (ImGui::Button("Fill All Tiles", ImVec2(half_btn_w, 0))) {
+            const float half_btn_w = (avail_w - 4.0f) * 0.5f;
+            if (ImGui::Button("Fill Solid (1)", ImVec2(half_btn_w, 0))) {
                 for (int r = 0; r < g_ed.doc.tileset.rows; ++r) {
                     for (int c = 0; c < g_ed.doc.tileset.cols; ++c) {
-                        g_ed.doc.tileset.set_tile_collision(c, r, g_ed.active_collision_type);
+                        if (c != 10 || r != 1) {
+                            g_ed.doc.tileset.set_tile_collision(c, r, 1);
+                        }
                     }
                 }
                 g_ed.doc.mark_dirty();
-                g_ed.status_msg = "Filled all tiles with collision type " + std::to_string(g_ed.active_collision_type);
+                g_ed.status_msg = "Filled solid (Type 1) on all tiles";
             }
             if (ImGui::IsItemHovered()) {
-                ImGui::SetTooltip("Set all tiles to active collision type (tile 10,1 remains None)");
+                ImGui::SetTooltip("Set all tiles to Solid (1)");
             }
-
             ImGui::SameLine(0, 4);
             if (ImGui::Button("Clear All Tiles", ImVec2(half_btn_w, 0))) {
                 for (int r = 0; r < g_ed.doc.tileset.rows; ++r) {
@@ -2526,11 +2403,15 @@ static void draw_sidebar_content(SDL_Renderer* renderer) {
             ImGui::EndChild();
         }
     } else {
+        ImGui::Spacing();
         ImGui::TextDisabled("No tileset loaded.");
+        ImGui::TextWrapped("Click 'Import Tileset...' or 'Create in Tileset Maker...' above to load or create tile art.");
     }
+}
 
-    ImGui::Separator();
-    // 2. Map Properties Section
+static void draw_sidebar_map_page() {
+    const ImVec4 sec_hdr_col = g_ed.settings.dark ? ImVec4(0.4f, 0.75f, 1.0f, 1.0f) : ImVec4(0.12f, 0.45f, 0.85f, 1.0f);
+
     ImGui::TextColored(sec_hdr_col, "MAP PROPERTIES");
     char name_buf[128];
     std::snprintf(name_buf, sizeof(name_buf), "%s", g_ed.doc.name.c_str());
@@ -2538,23 +2419,63 @@ static void draw_sidebar_content(SDL_Renderer* renderer) {
         g_ed.doc.name = name_buf;
         g_ed.doc.mark_dirty();
     }
-    ImGui::Text("Size: %dx%d - %dx%d px",
-                g_ed.doc.width_8px(), g_ed.doc.height_8px(),
-                g_ed.doc.pixel_width(), g_ed.doc.pixel_height());
 
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
+
+    ImGui::TextColored(sec_hdr_col, "DIMENSIONS");
+    ImGui::Text("Tile Size:    %d x %d px", g_ed.doc.tile_size, g_ed.doc.tile_size);
+    ImGui::Text("Map Grid:     %d x %d cells", g_ed.doc.width, g_ed.doc.height);
+    ImGui::Text("8x8 Units:    %d x %d tiles", g_ed.doc.width_8px(), g_ed.doc.height_8px());
+    ImGui::Text("Resolution:   %d x %d px", g_ed.doc.pixel_width(), g_ed.doc.pixel_height());
+    ImGui::Text("Edge Buffer:  %d cell outside border", g_ed.doc.buffer);
+
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
+
+    ImGui::TextColored(sec_hdr_col, "STATISTICS");
+    int placed_tiles = 0;
+    for (int y = 0; y < g_ed.doc.height; ++y) {
+        for (int x = 0; x < g_ed.doc.width; ++x) {
+            if (!g_ed.doc.get_cell(x, y).is_empty()) ++placed_tiles;
+        }
+    }
+    const int total_cells = g_ed.doc.width * g_ed.doc.height;
+    const float fill_pct = (total_cells > 0) ? (static_cast<float>(placed_tiles) / static_cast<float>(total_cells) * 100.0f) : 0.0f;
+    ImGui::Text("Placed Tiles: %d / %d (%.1f%%)", placed_tiles, total_cells, fill_pct);
+
+    const int types_used = g_ed.doc.build_collision_grid().count_types_used();
+    ImGui::Text("Collisions:   %d type(s) active on map", types_used);
+
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
+
+    ImGui::TextColored(sec_hdr_col, "ACTIONS");
     if (ImGui::Button("Resize Canvas...", ImVec2(-1, 0))) {
         g_ed.resize_w = g_ed.doc.width_8px();
         g_ed.resize_h = g_ed.doc.height_8px();
         g_ed.show_resize_modal = true;
     }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Change canvas width and height in 8x8 tile units");
+    }
+
     if (ImGui::Button("Clear Map", ImVec2(-1, 0))) {
         g_ed.doc.clear_cells();
         g_ed.status_msg = "Cleared map.";
     }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Clear all placed tiles (supports Undo/Redo)");
+    }
+}
 
-    ImGui::Separator();
-    // 3. Export Section
-    ImGui::TextColored(sec_hdr_col, "EXPORT");
+static void draw_sidebar_export_page() {
+    const ImVec4 sec_hdr_col = g_ed.settings.dark ? ImVec4(0.4f, 0.75f, 1.0f, 1.0f) : ImVec4(0.12f, 0.45f, 0.85f, 1.0f);
+
+    ImGui::TextColored(sec_hdr_col, "EXPORT SETTINGS");
     if (ImGui::Button("Export Destination...", ImVec2(-1, 0))) {
         nfdu8char_t* out_dir = nullptr;
         const char* def_dir = (std::strlen(g_ed.export_folder) > 0)
@@ -2573,8 +2494,12 @@ static void draw_sidebar_content(SDL_Renderer* renderer) {
     } else {
         ImGui::TextDisabled("No folder selected (prompts on Export).");
     }
+
+    ImGui::Spacing();
+    ImGui::Separator();
     ImGui::Spacing();
 
+    ImGui::TextColored(sec_hdr_col, "FORMATS");
     ImGui::Checkbox("MDE Collision JSON", &g_ed.export_col_json);
     const int types_used = g_ed.doc.build_collision_grid().count_types_used();
     if (types_used > 1) {
@@ -2588,13 +2513,76 @@ static void draw_sidebar_content(SDL_Renderer* renderer) {
     }
     ImGui::Checkbox("Map JSON", &g_ed.export_map_json);
     ImGui::Checkbox("Tileset Terrain (.terrain)", &g_ed.export_terrain);
+    ImGui::TextDisabled("Composite PNG (.png) is always exported.");
 
     ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
+
     {
         ScopedStyleColor col(ImGuiCol_Button, ImVec4(0.2f, 0.58f, 0.35f, 1.0f));
-        if (ImGui::Button("EXPORT", ImVec2(-1, 36.0f * g_ed.settings.scale))) {
+        if (ImGui::Button("EXPORT NOW", ImVec2(-1, 38.0f * g_ed.settings.scale))) {
             execute_export();
         }
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Export all checked formats to destination folder");
+    }
+}
+
+static void draw_sidebar_content(SDL_Renderer* renderer) {
+    // 3 Page Switcher Buttons at top of sidebar: Tileset | Map Properties | Export
+    const float avail_w = ImGui::GetContentRegionAvail().x;
+    const float gap = 4.0f;
+    const float btn_w = std::floor((avail_w - gap * 2.0f) / 3.0f);
+    const float btn_h = 28.0f * g_ed.settings.scale;
+
+    {
+        ScopedStyleColor active_col(ImGuiCol_Button, ImVec4(0.20f, 0.52f, 0.88f, 1.0f), g_ed.sidebar_page == SidebarPage::Tileset);
+        if (ImGui::Button("Tileset", ImVec2(btn_w, btn_h))) {
+            g_ed.sidebar_page = SidebarPage::Tileset;
+            g_ed.settings.sidebar_page = 0;
+            persist_settings();
+        }
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Tileset, stamp selection, collisions, and terrain variants");
+    }
+    ImGui::SameLine(0, gap);
+    {
+        ScopedStyleColor active_col(ImGuiCol_Button, ImVec4(0.20f, 0.52f, 0.88f, 1.0f), g_ed.sidebar_page == SidebarPage::MapProperties);
+        if (ImGui::Button("Map Properties", ImVec2(btn_w, btn_h))) {
+            g_ed.sidebar_page = SidebarPage::MapProperties;
+            g_ed.settings.sidebar_page = 1;
+            persist_settings();
+        }
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Level name, canvas dimensions, resize, and clear");
+    }
+    ImGui::SameLine(0, gap);
+    {
+        ScopedStyleColor active_col(ImGuiCol_Button, ImVec4(0.20f, 0.52f, 0.88f, 1.0f), g_ed.sidebar_page == SidebarPage::Export);
+        if (ImGui::Button("Export", ImVec2(std::max(btn_w, avail_w - btn_w * 2.0f - gap * 2.0f), btn_h))) {
+            g_ed.sidebar_page = SidebarPage::Export;
+            g_ed.settings.sidebar_page = 2;
+            persist_settings();
+        }
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Export destination, file format toggles, and output generation");
+    }
+
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
+
+    if (g_ed.sidebar_page == SidebarPage::Tileset) {
+        draw_sidebar_tileset_page(renderer);
+    } else if (g_ed.sidebar_page == SidebarPage::MapProperties) {
+        draw_sidebar_map_page();
+    } else if (g_ed.sidebar_page == SidebarPage::Export) {
+        draw_sidebar_export_page();
     }
 }
 
@@ -2763,6 +2751,9 @@ int run_editor() {
     g_ed.rect_fill = true;
     g_ed.rect_circle = false;
     g_ed.tileset_mode = TilesetSidebarMode::Stamp;
+    if (g_ed.settings.sidebar_page >= 0 && g_ed.settings.sidebar_page <= 2) {
+        g_ed.sidebar_page = static_cast<SidebarPage>(g_ed.settings.sidebar_page);
+    }
 
     const int win_w = (g_ed.settings.window_w >= 640) ? g_ed.settings.window_w : 1280;
     const int win_h = (g_ed.settings.window_h >= 480) ? g_ed.settings.window_h : 800;
@@ -3132,6 +3123,25 @@ int run_editor() {
                         g_ed.zoom = 2.0f;
                         g_ed.pan = ImVec2(60, 40);
                         persist_settings();
+                    }
+                    ImGui::Separator();
+                    if (ImGui::BeginMenu("Sidebar Page")) {
+                        if (ImGui::MenuItem("Tileset", nullptr, g_ed.sidebar_page == SidebarPage::Tileset)) {
+                            g_ed.sidebar_page = SidebarPage::Tileset;
+                            g_ed.settings.sidebar_page = 0;
+                            persist_settings();
+                        }
+                        if (ImGui::MenuItem("Map Properties", nullptr, g_ed.sidebar_page == SidebarPage::MapProperties)) {
+                            g_ed.sidebar_page = SidebarPage::MapProperties;
+                            g_ed.settings.sidebar_page = 1;
+                            persist_settings();
+                        }
+                        if (ImGui::MenuItem("Export", nullptr, g_ed.sidebar_page == SidebarPage::Export)) {
+                            g_ed.sidebar_page = SidebarPage::Export;
+                            g_ed.settings.sidebar_page = 2;
+                            persist_settings();
+                        }
+                        ImGui::EndMenu();
                     }
                     ImGui::EndMenu();
                 }
