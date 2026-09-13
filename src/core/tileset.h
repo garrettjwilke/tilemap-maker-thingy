@@ -137,10 +137,10 @@ public:
     Cell resolve_variant(int root_x, int root_y, float roll01) const;
 
     // Loading methods:
-    bool load_from_file(const std::string& path);
+    bool load_from_file(const std::string& path, const std::string& override_png = "");
     bool load_png_file(const std::string& path);
     bool load_png_raw(const std::string& path);
-    bool load_terrain_file(const std::string& path);
+    bool load_terrain_file(const std::string& path, const std::string& override_png = "");
     bool load_header_file(const std::string& path);
     bool import_variants_file(const std::string& path);
     void parse_terrain_text(const std::string& text, const std::string& path);

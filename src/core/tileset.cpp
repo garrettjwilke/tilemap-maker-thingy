@@ -252,7 +252,7 @@ std::vector<uint8_t> Tileset::get_tile_pixels(int col, int row) const {
     return buf;
 }
 
-bool Tileset::load_from_file(const std::string& path) {
+bool Tileset::load_from_file(const std::string& path, const std::string& override_png) {
     error.clear();
     if (path.empty()) {
         error = "Path is empty";
@@ -260,7 +260,7 @@ bool Tileset::load_from_file(const std::string& path) {
     }
     // Check if .terrain extension
     if (path.size() >= 8 && path.substr(path.size() - 8) == ".terrain") {
-        return load_terrain_file(path);
+        return load_terrain_file(path, override_png);
     }
     // Check if .h extension
     if (path.size() >= 2 && path.substr(path.size() - 2) == ".h") {
@@ -271,7 +271,7 @@ bool Tileset::load_from_file(const std::string& path) {
         std::string text;
         if (read_text_file(path, text)) {
             if (text.find("\"variants\"") != std::string::npos || text.find("\"tileset\"") != std::string::npos) {
-                return load_terrain_file(path);
+                return load_terrain_file(path, override_png);
             }
         }
     }
@@ -540,7 +540,7 @@ bool Tileset::load_png_file(const std::string& path) {
     return true;
 }
 
-bool Tileset::load_terrain_file(const std::string& path) {
+bool Tileset::load_terrain_file(const std::string& path, const std::string& override_png) {
     error.clear();
     std::string text;
     if (!read_text_file(path, text)) {
@@ -577,6 +577,9 @@ bool Tileset::load_terrain_file(const std::string& path) {
     }
 
     std::vector<std::string> png_candidates;
+    if (!override_png.empty()) {
+        png_candidates.push_back(override_png);
+    }
     if (!ts_name.empty()) {
         if (!dir.empty()) png_candidates.push_back(dir + "/" + ts_name);
         png_candidates.push_back(ts_name);
@@ -584,7 +587,10 @@ bool Tileset::load_terrain_file(const std::string& path) {
     if (!dir.empty()) png_candidates.push_back(dir + "/" + stem + ".png");
     png_candidates.push_back(stem + ".png");
     if (!png_path.empty()) {
-        png_candidates.push_back(png_path);
+        const std::string cur_base = basename_of(png_path);
+        if (cur_base == stem || (!ts_name.empty() && cur_base == basename_of(ts_name))) {
+            png_candidates.push_back(png_path);
+        }
     }
 
     std::string resolved_png;
@@ -597,8 +603,11 @@ bool Tileset::load_terrain_file(const std::string& path) {
 
     if (resolved_png.empty()) {
         if (is_valid()) {
-            parse_terrain_text(text, path);
-            return true;
+            const std::string cur_base = basename_of(png_path);
+            if (cur_base == stem || (!ts_name.empty() && cur_base == basename_of(ts_name))) {
+                parse_terrain_text(text, path);
+                return true;
+            }
         }
         error = "Could not find matching PNG image for terrain file: " + (ts_name.empty() ? (stem + ".png") : ts_name);
         return false;

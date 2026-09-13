@@ -21,7 +21,11 @@ struct Settings {
     bool export_terrain = true;
     bool export_tileset_png = true;
     bool export_tileset_proj = true;
+#ifdef __EMSCRIPTEN__
+    bool export_zip = true;
+#else
     bool export_zip = false;
+#endif
     Rgb grid_color{100, 100, 100};
     int window_x = 0;
     int window_y = 0;

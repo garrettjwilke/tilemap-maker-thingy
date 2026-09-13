@@ -565,6 +565,23 @@ void test_terrain_import() {
     expect(ts_json.variants.size() == 2, ".json variants count 2");
     expect(ts_json.tile_size == 8, ".json tile_size 8");
 
+    // 3. Test that loading a different terrain without its companion PNG fails and does not reuse old PNG
+    const std::string diff_tpath = temp_path("different_terrain.terrain");
+    {
+        std::ofstream f(diff_tpath);
+        f << "{\n  \"version\": 1,\n  \"tileset\": \"non_existent_diff.png\",\n  \"variants\": []\n}\n";
+    }
+    expect(!ts_terrain.load_from_file(diff_tpath), "different terrain without matching PNG must fail even if tileset was valid");
+    expect(!ts_terrain.error.empty(), "error message is set when companion PNG is missing");
+
+    // 4. Test loading different terrain with override_png succeeds
+    const std::string diff_png = temp_path("different_terrain.png");
+    expect(create_dummy_tileset_png(diff_png, 16), "create dummy 16px tileset");
+    expect(ts_terrain.load_from_file(diff_tpath, diff_png), "loading different terrain with override_png succeeds");
+    expect(ts_terrain.tile_size == 16, "reloaded tileset tile_size is 16");
+
+    std::remove(diff_tpath.c_str());
+    std::remove(diff_png.c_str());
     std::remove(tpath.c_str());
     std::remove(jpath.c_str());
     std::remove(ts8_path.c_str());
@@ -1871,6 +1888,11 @@ void test_zip_export() {
 
     // 1. Settings persistence for export_zip
     Settings s;
+#ifdef __EMSCRIPTEN__
+    expect(s.export_zip, "default export_zip should be true on WASM");
+#else
+    expect(!s.export_zip, "default export_zip should be false on native desktop");
+#endif
     s.export_zip = true;
     std::string s_text = format_settings(s);
     expect(s_text.find("export_zip=true") != std::string::npos, "settings text formats export_zip=true");
