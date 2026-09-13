@@ -466,7 +466,8 @@ static void execute_export() {
     const std::string prefix = dir + "/" + stem;
     std::vector<std::string> saved_files;
 
-    if (g_ed.export_png) {
+    // Composite PNG is always exported
+    {
         const std::string p = prefix + ".png";
         std::string err = export_composite_png(g_ed.doc, p);
         if (!err.empty()) {
@@ -3085,8 +3086,9 @@ static void draw_sidebar_content(SDL_Renderer* renderer) {
     } else {
         ImGui::TextDisabled("No folder selected (prompts on Export).");
     }
+    ImGui::TextDisabled("• Composite PNG is always exported (%s.png)", (!g_ed.doc.name.empty() ? g_ed.doc.name.c_str() : "map"));
+    ImGui::Spacing();
 
-    ImGui::Checkbox("Composite PNG", &g_ed.export_png);
     ImGui::Checkbox("MDE Collision JSON", &g_ed.export_col_json);
     const int types_used = g_ed.doc.build_collision_grid().count_types_used();
     if (types_used > 1) {
@@ -3104,7 +3106,7 @@ static void draw_sidebar_content(SDL_Renderer* renderer) {
     ImGui::Spacing();
     {
         ScopedStyleColor col(ImGuiCol_Button, ImVec4(0.2f, 0.58f, 0.35f, 1.0f));
-        if (ImGui::Button("EXPORT ALL", ImVec2(-1, 36))) {
+        if (ImGui::Button("EXPORT", ImVec2(-1, 36))) {
             execute_export();
         }
     }
@@ -3484,7 +3486,7 @@ int run_editor() {
                     open_tileset_dialog(renderer);
                 }
                 ImGui::Separator();
-                if (ImGui::MenuItem("Export All", "Ctrl+E")) {
+                if (ImGui::MenuItem("Export", "Ctrl+E")) {
                     execute_export();
                 }
                 ImGui::Separator();
