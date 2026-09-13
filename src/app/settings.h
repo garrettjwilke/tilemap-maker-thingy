@@ -17,6 +17,7 @@ struct Settings {
     float zoom = 2.0f;
     int brush_size = 1;
     int paint_mode = 0; // 0 = Terrain, 1 = Stamp
+    bool export_terrain = true;
     Rgb grid_color{100, 100, 100};
     int window_x = 0;
     int window_y = 0;

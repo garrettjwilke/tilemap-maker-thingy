@@ -430,4 +430,59 @@ std::string load_map_json(TilemapDoc& doc, const std::string& path) {
     return "";
 }
 
+static std::string render_terrain_json(const Tileset& tileset, const std::string& path) {
+    std::string tileset_name;
+    if (!tileset.png_path.empty()) {
+        tileset_name = filename_of(tileset.png_path);
+    } else {
+        tileset_name = filename_of(path);
+        if (tileset_name.size() >= 8 && tileset_name.substr(tileset_name.size() - 8) == ".terrain") {
+            tileset_name = tileset_name.substr(0, tileset_name.size() - 8) + ".png";
+        }
+    }
+
+    std::ostringstream ss;
+    ss << "{\n";
+    ss << "\t\"version\": 1,\n";
+    ss << "\t\"tile_size\": " << tileset.tile_size << ",\n";
+    ss << "\t\"tileset\": \"" << tileset_name << "\",\n";
+    ss << "\t\"variants\": [\n";
+    for (size_t i = 0; i < tileset.variants.size(); ++i) {
+        const auto& v = tileset.variants[i];
+        ss << "\t\t{\n";
+        ss << "\t\t\t\"x\": " << v.x << ",\n";
+        ss << "\t\t\t\"y\": " << v.y << ",\n";
+        ss << "\t\t\t\"root_x\": " << v.root_x << ",\n";
+        ss << "\t\t\t\"root_y\": " << v.root_y << ",\n";
+        ss << "\t\t\t\"probability\": " << v.probability << "\n";
+        ss << "\t\t}" << (i + 1 < tileset.variants.size() ? ",\n" : "\n");
+    }
+    ss << "\t]\n";
+    ss << "}\n";
+    return ss.str();
+}
+
+std::string save_terrain_file(Tileset& tileset, const std::string& path) {
+    if (path.empty()) {
+        return "Path is empty";
+    }
+    const std::string text = render_terrain_json(tileset, path);
+    if (!write_text_file(path, text)) {
+        return "Could not write terrain file to " + path;
+    }
+    tileset.terrain_path = path;
+    return "";
+}
+
+std::string export_tileset_terrain(const Tileset& tileset, const std::string& path) {
+    if (path.empty()) {
+        return "Export path is empty";
+    }
+    const std::string text = render_terrain_json(tileset, path);
+    if (!write_text_file(path, text)) {
+        return "Could not export terrain file to " + path;
+    }
+    return "";
+}
+
 } // namespace tmm

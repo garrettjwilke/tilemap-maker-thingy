@@ -17,6 +17,10 @@ std::string export_collision_bin(const TilemapDoc& doc, const std::string& path)
 std::string save_map_json(const TilemapDoc& doc, const std::string& path);
 std::string load_map_json(TilemapDoc& doc, const std::string& path);
 
+// Tileset terrain save & export
+std::string save_terrain_file(Tileset& tileset, const std::string& path);
+std::string export_tileset_terrain(const Tileset& tileset, const std::string& path);
+
 // File helpers
 bool write_text_file(const std::string& path, const std::string& text);
 bool read_text_file(const std::string& path, std::string& text);

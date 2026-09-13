@@ -98,8 +98,25 @@ public:
     void parse_terrain_text(const std::string& text, const std::string& path);
     bool parse_c_header(const std::string& text, const std::string& path);
 
-    // Helpers
+    // Helpers and variant management
+    static bool is_base_origin_tile(int col, int row) {
+        return col >= 0 && col < kBaseCols && row >= 0 && row < kBaseRows;
+    }
+    static bool is_variant_tile(int col, int row) {
+        return col >= kBaseCols && row >= 0;
+    }
     std::vector<VariantBinding> variants_for_root(int root_x, int root_y) const;
+    const VariantBinding* find_variant(int x, int y) const;
+    VariantBinding* find_variant(int x, int y);
+    bool is_variant(int x, int y) const;
+    bool is_origin(int x, int y) const;
+    int count_variants_for_root(int root_x, int root_y) const;
+    bool set_variant(int x, int y, int root_x, int root_y, float probability = 0.3f);
+    bool remove_variant(int x, int y);
+    void remove_variants_for_root(int root_x, int root_y);
+    void clear_variants();
+    void auto_bind_extra_columns(int root_x = kDefaultCenterCol, int root_y = kDefaultCenterRow, float probability = 1.0f);
+    std::string default_terrain_path() const;
 };
 
 } // namespace tmm

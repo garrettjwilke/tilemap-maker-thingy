@@ -90,6 +90,7 @@ std::string format_settings(const Settings& s) {
     ss << "zoom=" << s.zoom << "\n";
     ss << "brush_size=" << s.brush_size << "\n";
     ss << "paint_mode=" << (s.paint_mode == 1 ? "stamp" : "terrain") << "\n";
+    ss << "export_terrain=" << (s.export_terrain ? "true" : "false") << "\n";
     ss << "window_x=" << s.window_x << "\n";
     ss << "window_y=" << s.window_y << "\n";
     ss << "window_w=" << s.window_w << "\n";
@@ -124,6 +125,7 @@ bool parse_settings_text(Settings& s, const std::string& text) {
         else if (key == "zoom") s.zoom = std::clamp(std::strtof(val.c_str(), nullptr), 0.25f, 16.0f);
         else if (key == "brush_size") s.brush_size = std::clamp(std::atoi(val.c_str()), 1, 4);
         else if (key == "paint_mode") s.paint_mode = (val == "stamp" || val == "1") ? 1 : 0;
+        else if (key == "export_terrain") s.export_terrain = (val == "true" || val == "1");
         else if (key == "window_x") s.window_x = std::atoi(val.c_str());
         else if (key == "window_y") s.window_y = std::atoi(val.c_str());
         else if (key == "window_w") s.window_w = std::max(std::atoi(val.c_str()), 640);

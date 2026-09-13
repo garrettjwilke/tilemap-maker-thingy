@@ -1221,6 +1221,128 @@ void test_empty_background_tile_10_1() {
     std::remove(ts_path.c_str());
 }
 
+void test_tileset_terrain_and_variants() {
+    using namespace tmm;
+
+    // 1. Basic variant manipulation on Tileset
+    Tileset ts;
+    ts.cols = 16;
+    ts.rows = 4;
+    ts.tile_size = 16;
+    ts.pixels.assign(16 * 16 * 4 * 16, 1); // mock pixels
+
+    expect(ts.set_variant(12, 0, 9, 2, 0.45f), "set variant (12, 0) -> (9, 2)");
+    expect(ts.is_variant(12, 0), "tile (12, 0) is variant");
+    expect(!ts.is_variant(9, 2), "tile (9, 2) is not variant");
+    expect(ts.is_origin(9, 2), "tile (9, 2) is origin");
+    expect(ts.count_variants_for_root(9, 2) == 1, "origin (9, 2) has 1 variant");
+
+    const VariantBinding* vb = ts.find_variant(12, 0);
+    expect(vb != nullptr && vb->root_x == 9 && vb->root_y == 2, "find_variant returns correct root");
+    expect(std::abs(vb->probability - 0.45f) < 0.01f, "find_variant probability matches");
+
+    // Remap to new origin
+    expect(ts.set_variant(12, 0, 0, 3, 0.60f), "remap variant (12, 0) -> (0, 3)");
+    expect(ts.count_variants_for_root(9, 2) == 0, "origin (9, 2) has 0 variants after remap");
+    expect(ts.count_variants_for_root(0, 3) == 1, "origin (0, 3) has 1 variant after remap");
+
+    // Setting tile as variant of itself unbinds it
+    expect(!ts.set_variant(12, 0, 12, 0, 0.5f), "set_variant to self should fail and remove");
+    expect(!ts.is_variant(12, 0), "tile (12, 0) is no longer a variant");
+
+    // Strict 12x4 Origins and Extra Variants rules:
+    expect(Tileset::is_base_origin_tile(0, 0), "0,0 is base origin");
+    expect(Tileset::is_base_origin_tile(11, 3), "11,3 is base origin");
+    expect(!Tileset::is_base_origin_tile(12, 0), "12,0 is not base origin");
+    expect(!Tileset::is_base_origin_tile(0, 4), "0,4 is not base origin");
+    expect(Tileset::is_variant_tile(12, 0), "12,0 is variant tile");
+    expect(!Tileset::is_variant_tile(11, 0), "11,0 is not variant tile");
+
+    // Base origin tiles cannot be assigned as variants:
+    expect(!ts.set_variant(5, 2, 9, 2, 0.5f), "base 12x4 tile cannot be variant");
+    // Extra tiles cannot be assigned as root origins:
+    expect(!ts.set_variant(12, 0, 13, 0, 0.5f), "extra tile cannot be root origin");
+
+    // 2. Auto-bind extra columns
+    ts.auto_bind_extra_columns(9, 2, 0.75f);
+    // Cols 12, 13, 14, 15 (4 cols * 4 rows = 16 variants)
+    expect(ts.variants.size() == 16, "auto_bind_extra_columns bound 16 variants");
+    expect(ts.count_variants_for_root(9, 2) == 16, "origin (9, 2) has 16 variants");
+
+    expect(ts.remove_variant(12, 1), "remove variant (12, 1)");
+    expect(ts.variants.size() == 15, "variant count decremented to 15");
+
+    ts.clear_variants();
+    expect(ts.variants.empty(), "clear_variants clears all variants");
+
+    // 3. save_terrain_file and export_tileset_terrain
+    const std::string ts_png = temp_path("test_terrain_save_ts.png");
+    expect(create_dummy_tileset_png(ts_png, 16), "create dummy tileset for terrain save");
+    expect(ts.load_from_file(ts_png), "load dummy tileset");
+
+    ts.clear_variants();
+    ts.set_variant(12, 0, 9, 2, 0.35f);
+    ts.set_variant(12, 1, 1, 0, 0.50f);
+
+    const std::string t_save_path = temp_path("test_saved.terrain");
+    const std::string t_export_path = temp_path("test_exported.terrain");
+
+    expect(save_terrain_file(ts, t_save_path).empty(), "save_terrain_file succeeded");
+    expect(ts.terrain_path == t_save_path, "save_terrain_file updated ts.terrain_path");
+    expect(export_tileset_terrain(ts, t_export_path).empty(), "export_tileset_terrain succeeded");
+
+    // Load saved terrain into new Tileset and verify
+    Tileset loaded_ts;
+    expect(loaded_ts.load_terrain_file(t_save_path), "load_terrain_file loads saved terrain");
+    expect(loaded_ts.variants.size() == 2, "loaded terrain has 2 variants");
+    const VariantBinding* lv1 = loaded_ts.find_variant(12, 0);
+    expect(lv1 != nullptr && lv1->root_x == 9 && lv1->root_y == 2, "loaded variant 1 mapping");
+    expect(std::abs(lv1->probability - 0.35f) < 0.01f, "loaded variant 1 probability");
+    const VariantBinding* lv2 = loaded_ts.find_variant(12, 1);
+    expect(lv2 != nullptr && lv2->root_x == 1 && lv2->root_y == 0, "loaded variant 2 mapping");
+    expect(std::abs(lv2->probability - 0.50f) < 0.01f, "loaded variant 2 probability");
+
+    std::remove(t_save_path.c_str());
+    std::remove(t_export_path.c_str());
+    std::remove(ts_png.c_str());
+
+    // 4. Settings export_terrain persistence
+    Settings s;
+    s.export_terrain = false;
+    const std::string cfg_text = format_settings(s);
+    expect(cfg_text.find("export_terrain=false") != std::string::npos, "format_settings includes export_terrain=false");
+
+    Settings s2;
+    expect(parse_settings_text(s2, cfg_text), "parse_settings_text succeeded");
+    expect(s2.export_terrain == false, "parsed export_terrain is false");
+
+    // 5. Live autotile re-evaluation on variant remapping
+    TilemapDoc doc(10, 10, 16);
+    const std::string ts_doc_png = temp_path("test_doc_ts.png");
+    expect(create_dummy_tileset_png(ts_doc_png, 16, 14, 4), "create dummy tileset 14x4 for doc");
+    expect(doc.tileset.load_from_file(ts_doc_png), "load doc tileset");
+    doc.tileset.clear_variants();
+
+    // Fill 3x3 block with terrain: center cell (2, 2) has 8 terrain neighbors -> root (9, 2)
+    doc.fill_rect({1, 1, 3, 3}, TileMode::Terrain);
+    expect(doc.get_cell(2, 2).atlas_x == 9 && doc.get_cell(2, 2).atlas_y == 2, "center cell initially root (9, 2)");
+
+    // Bind (12, 2) as variant of (9, 2) with 10.0f weight, and set roll to 0.99f
+    doc.tileset.set_variant(12, 2, 9, 2, 1.0f);
+    MapCell mc = doc.get_cell(2, 2);
+    mc.roll = 0.99f;
+    doc.set_cell(2, 2, mc);
+    doc.solve_all_autotiles();
+    expect(doc.get_cell(2, 2).atlas_x == 12 && doc.get_cell(2, 2).atlas_y == 2, "center cell remapped to variant (12, 2)");
+
+    // Clear variants and re-solve
+    doc.tileset.clear_variants();
+    doc.solve_all_autotiles();
+    expect(doc.get_cell(2, 2).atlas_x == 9 && doc.get_cell(2, 2).atlas_y == 2, "center cell reverted to root (9, 2)");
+
+    std::remove(ts_doc_png.c_str());
+}
+
 } // namespace
 
 int main() {
@@ -1241,6 +1363,7 @@ int main() {
     test_default_size_and_8px_dimensions();
     test_buffer_and_outside_zone();
     test_empty_background_tile_10_1();
+    test_tileset_terrain_and_variants();
 
     if (g_fails) {
         std::cerr << g_fails << " test(s) failed\n";

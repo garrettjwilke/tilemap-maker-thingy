@@ -96,6 +96,111 @@ std::vector<VariantBinding> Tileset::variants_for_root(int root_x, int root_y) c
     return list;
 }
 
+const VariantBinding* Tileset::find_variant(int x, int y) const {
+    for (const auto& v : variants) {
+        if (v.x == x && v.y == y) return &v;
+    }
+    return nullptr;
+}
+
+VariantBinding* Tileset::find_variant(int x, int y) {
+    for (auto& v : variants) {
+        if (v.x == x && v.y == y) return &v;
+    }
+    return nullptr;
+}
+
+bool Tileset::is_variant(int x, int y) const {
+    return find_variant(x, y) != nullptr;
+}
+
+bool Tileset::is_origin(int x, int y) const {
+    for (const auto& v : variants) {
+        if (v.root_x == x && v.root_y == y) return true;
+    }
+    return false;
+}
+
+int Tileset::count_variants_for_root(int root_x, int root_y) const {
+    int cnt = 0;
+    for (const auto& v : variants) {
+        if (v.root_x == root_x && v.root_y == root_y) ++cnt;
+    }
+    return cnt;
+}
+
+bool Tileset::set_variant(int x, int y, int root_x, int root_y, float probability) {
+    if (!in_bounds(x, y) || !in_bounds(root_x, root_y)) return false;
+    if (x == root_x && y == root_y) {
+        remove_variant(x, y);
+        return false;
+    }
+    // The main 12x4 tiles must always be origins, and only the extra tiles (col >= 12) can be variants!
+    if (!is_variant_tile(x, y) || !is_base_origin_tile(root_x, root_y)) return false;
+    probability = std::clamp(probability, 0.01f, 1.0f);
+    VariantBinding* existing = find_variant(x, y);
+    if (existing) {
+        existing->root_x = root_x;
+        existing->root_y = root_y;
+        existing->probability = probability;
+    } else {
+        VariantBinding b;
+        b.x = x;
+        b.y = y;
+        b.root_x = root_x;
+        b.root_y = root_y;
+        b.probability = probability;
+        variants.push_back(b);
+    }
+    return true;
+}
+
+bool Tileset::remove_variant(int x, int y) {
+    for (auto it = variants.begin(); it != variants.end(); ++it) {
+        if (it->x == x && it->y == y) {
+            variants.erase(it);
+            return true;
+        }
+    }
+    return false;
+}
+
+void Tileset::remove_variants_for_root(int root_x, int root_y) {
+    for (auto it = variants.begin(); it != variants.end(); ) {
+        if (it->root_x == root_x && it->root_y == root_y) {
+            it = variants.erase(it);
+        } else {
+            ++it;
+        }
+    }
+}
+
+void Tileset::clear_variants() {
+    variants.clear();
+}
+
+void Tileset::auto_bind_extra_columns(int root_x, int root_y, float probability) {
+    if (cols <= kBaseCols) return;
+    for (int c = kBaseCols; c < cols; ++c) {
+        for (int r = 0; r < rows; ++r) {
+            set_variant(c, r, root_x, root_y, probability);
+        }
+    }
+}
+
+std::string Tileset::default_terrain_path() const {
+    if (!terrain_path.empty() && terrain_path != "[auto-detected extra columns]") {
+        return terrain_path;
+    }
+    if (!png_path.empty()) {
+        const std::string dir = dirname_of(png_path);
+        const std::string stem = basename_of(png_path);
+        return (dir.empty() ? "" : (dir + "/")) + stem + ".terrain";
+    }
+    return "tileset.terrain";
+}
+
+
 Cell Tileset::resolve_variant(int root_x, int root_y, float roll01) const {
     const auto vars = variants_for_root(root_x, root_y);
     if (vars.empty()) {
