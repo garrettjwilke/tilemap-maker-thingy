@@ -152,6 +152,7 @@ std::string save_map_json(const TilemapDoc& doc, const std::string& path) {
     ss << "\t\"tile_size\": " << doc.tile_size << ",\n";
     ss << "\t\"width\": " << doc.width << ",\n";
     ss << "\t\"height\": " << doc.height << ",\n";
+    ss << "\t\"buffer\": " << doc.buffer << ",\n";
     ss << "\t\"origin_x\": " << doc.origin_x << ",\n";
     ss << "\t\"origin_y\": " << doc.origin_y << ",\n";
     if (!doc.tileset.png_path.empty()) {
@@ -178,8 +179,8 @@ std::string save_map_json(const TilemapDoc& doc, const std::string& path) {
     }
     ss << "\t\"cells\": [\n";
     bool first = true;
-    for (int y = 0; y < doc.height; ++y) {
-        for (int x = 0; x < doc.width; ++x) {
+    for (int y = -doc.buffer; y < doc.height + doc.buffer; ++y) {
+        for (int x = -doc.buffer; x < doc.width + doc.buffer; ++x) {
             const MapCell& c = doc.get_cell(x, y);
             if (c.is_empty()) continue;
             if (!first) ss << ",\n";
@@ -236,11 +237,13 @@ std::string load_map_json(TilemapDoc& doc, const std::string& path) {
     const int tile_size = find_int("tile_size", 16);
     const int width = find_int("width", 30);
     const int height = find_int("height", 20);
+    const int buffer = find_int("buffer", 1);
     const int origin_x = find_int("origin_x", 0);
     const int origin_y = find_int("origin_y", 0);
     const std::string tileset_field = find_str("tileset");
 
     doc.reset(width, height, tile_size);
+    doc.buffer = buffer;
     doc.name = name.empty() ? "untitled" : name;
     doc.origin_x = origin_x;
     doc.origin_y = origin_y;
@@ -380,8 +383,8 @@ std::string load_map_json(TilemapDoc& doc, const std::string& path) {
                 return std::strtof(block.c_str() + cp + 1, nullptr);
             };
 
-            const int cx = cell_int("x", -1);
-            const int cy = cell_int("y", -1);
+            const int cx = cell_int("x", -999999);
+            const int cy = cell_int("y", -999999);
             const int ax = cell_int("atlas_x", -1);
             const int ay = cell_int("atlas_y", -1);
 

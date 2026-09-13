@@ -27,10 +27,11 @@ void TilemapDoc::reset(int w, int h, int ts) {
     width = clampi(w, 1, 2048);
     height = clampi(h, 1, 2048);
     tile_size = (ts == 8) ? 8 : 16;
+    buffer = 1;
     name = "untitled";
     origin_x = 0;
     origin_y = 0;
-    cells_.assign(static_cast<size_t>(width * height), MapCell{});
+    cells_.assign(total_cells(), MapCell{});
     undo_stack_.clear();
     redo_stack_.clear();
     dirty_ = false;
@@ -48,20 +49,41 @@ void TilemapDoc::reset_8px(int w_8px, int h_8px, int ts) {
 
 const MapCell& TilemapDoc::get_cell(int x, int y) const {
     if (!in_bounds(x, y)) return kEmptyCell;
-    return cells_[static_cast<size_t>(y * width + x)];
+    return cells_[cell_index(x, y)];
 }
 
 void TilemapDoc::set_cell(int x, int y, const MapCell& cell) {
     if (!in_bounds(x, y)) return;
     record_cell_internal(x, y);
-    cells_[static_cast<size_t>(y * width + x)] = cell;
+    cells_[cell_index(x, y)] = cell;
+    mark_dirty();
+}
+
+MapCell& TilemapDoc::cell_at(int x, int y) {
+    return cells_[cell_index(x, y)];
+}
+
+const MapCell& TilemapDoc::cell_at(int x, int y) const {
+    return cells_[cell_index(x, y)];
+}
+
+void TilemapDoc::clear_cells() {
+    begin_stroke("Clear Map");
+    for (int y = -buffer; y < height + buffer; ++y) {
+        for (int x = -buffer; x < width + buffer; ++x) {
+            record_cell_internal(x, y);
+            cells_[cell_index(x, y)] = MapCell{};
+        }
+    }
+    solve_all_autotiles();
+    end_stroke();
     mark_dirty();
 }
 
 void TilemapDoc::record_cell_internal(int x, int y) {
     if (!stroke_in_progress_) return;
     if (!in_bounds(x, y)) return;
-    const size_t idx = static_cast<size_t>(y * width + x);
+    const size_t idx = cell_index(x, y);
     if (idx < pending_recorded_.size() && pending_recorded_[idx]) {
         return; // Already recorded old state
     }
@@ -84,7 +106,7 @@ void TilemapDoc::begin_stroke(const std::string& action_name) {
     current_action_.old_w = width;
     current_action_.old_h = height;
     pending_changes_.clear();
-    pending_recorded_.assign(static_cast<size_t>(width * height), 0);
+    pending_recorded_.assign(total_cells(), 0);
 }
 
 void TilemapDoc::record_change(int x, int y) {
@@ -118,7 +140,7 @@ void TilemapDoc::cancel_stroke() {
     stroke_in_progress_ = false;
     for (auto it = pending_changes_.rbegin(); it != pending_changes_.rend(); ++it) {
         if (in_bounds(it->pos.x, it->pos.y)) {
-            cells_[static_cast<size_t>(it->pos.y * width + it->pos.x)] = it->old_cell;
+            cells_[cell_index(it->pos.x, it->pos.y)] = it->old_cell;
         }
     }
     pending_changes_.clear();
@@ -136,12 +158,12 @@ bool TilemapDoc::undo() {
     if (act.old_w != width || act.old_h != height) {
         width = act.old_w;
         height = act.old_h;
-        cells_.assign(static_cast<size_t>(width * height), MapCell{});
+        cells_.assign(total_cells(), MapCell{});
     }
 
     for (const auto& ch : act.changes) {
         if (in_bounds(ch.pos.x, ch.pos.y)) {
-            cells_[static_cast<size_t>(ch.pos.y * width + ch.pos.x)] = ch.old_cell;
+            cells_[cell_index(ch.pos.x, ch.pos.y)] = ch.old_cell;
         }
     }
     solve_all_autotiles();
@@ -158,12 +180,12 @@ bool TilemapDoc::redo() {
     if (act.new_w != width || act.new_h != height) {
         width = act.new_w;
         height = act.new_h;
-        cells_.assign(static_cast<size_t>(width * height), MapCell{});
+        cells_.assign(total_cells(), MapCell{});
     }
 
     for (const auto& ch : act.changes) {
         if (in_bounds(ch.pos.x, ch.pos.y)) {
-            cells_[static_cast<size_t>(ch.pos.y * width + ch.pos.x)] = ch.new_cell;
+            cells_[cell_index(ch.pos.x, ch.pos.y)] = ch.new_cell;
         }
     }
     solve_all_autotiles();
@@ -174,7 +196,7 @@ bool TilemapDoc::redo() {
 
 void TilemapDoc::update_cell_autotile(int x, int y) {
     if (!in_bounds(x, y)) return;
-    MapCell& c = cells_[static_cast<size_t>(y * width + x)];
+    MapCell& c = cell_at(x, y);
     if (c.mode != TileMode::Terrain) return;
 
     const bool nb_E  = is_terrain(x + 1, y);
@@ -212,8 +234,8 @@ void TilemapDoc::solve_autotiles_around(int cx, int cy, int radius) {
 }
 
 void TilemapDoc::solve_all_autotiles() {
-    for (int y = 0; y < height; ++y) {
-        for (int x = 0; x < width; ++x) {
+    for (int y = -buffer; y < height + buffer; ++y) {
+        for (int x = -buffer; x < width + buffer; ++x) {
             update_cell_autotile(x, y);
         }
     }
@@ -221,9 +243,9 @@ void TilemapDoc::solve_all_autotiles() {
 
 void TilemapDoc::reroll_variants() {
     begin_stroke("Reroll Variants");
-    for (int y = 0; y < height; ++y) {
-        for (int x = 0; x < width; ++x) {
-            MapCell& c = cells_[static_cast<size_t>(y * width + x)];
+    for (int y = -buffer; y < height + buffer; ++y) {
+        for (int x = -buffer; x < width + buffer; ++x) {
+            MapCell& c = cell_at(x, y);
             if (c.mode == TileMode::Terrain) {
                 record_cell_internal(x, y);
                 c.roll = random_01();
@@ -248,7 +270,7 @@ void TilemapDoc::paint_cell(int x, int y, TileMode mode, int stamp_col, int stam
             if (!in_bounds(cx, cy)) continue;
             if (!in_clip(cx, cy)) continue;
             record_cell_internal(cx, cy);
-            MapCell& c = cells_[static_cast<size_t>(cy * width + cx)];
+            MapCell& c = cell_at(cx, cy);
             c.mode = mode;
             if (mode == TileMode::Terrain) {
                 if (c.roll == 0.0f) c.roll = random_01();
@@ -273,7 +295,7 @@ void TilemapDoc::erase_cell(int x, int y, int brush_size) {
             if (!in_bounds(cx, cy)) continue;
             if (!in_clip(cx, cy)) continue;
             record_cell_internal(cx, cy);
-            cells_[static_cast<size_t>(cy * width + cx)] = MapCell{};
+            cell_at(cx, cy) = MapCell{};
         }
     }
     solve_autotiles_around(x, y, brush_size + 1);
@@ -300,7 +322,7 @@ void TilemapDoc::draw_line(int x0, int y0, int x1, int y1, TileMode mode, int st
                 if (!in_bounds(cx, cy)) continue;
                 if (!in_clip(cx, cy)) continue;
                 record_cell_internal(cx, cy);
-                MapCell& c = cells_[static_cast<size_t>(cy * width + cx)];
+                MapCell& c = cell_at(cx, cy);
                 c.mode = mode;
                 if (mode == TileMode::Terrain) {
                     if (c.roll == 0.0f) c.roll = random_01();
@@ -343,7 +365,7 @@ void TilemapDoc::erase_line(int x0, int y0, int x1, int y1, int brush_size) {
                 if (!in_bounds(cx, cy)) continue;
                 if (!in_clip(cx, cy)) continue;
                 record_cell_internal(cx, cy);
-                cells_[static_cast<size_t>(cy * width + cx)] = MapCell{};
+                cell_at(cx, cy) = MapCell{};
             }
         }
         if (x == x1 && y == y1) break;
@@ -370,7 +392,7 @@ void TilemapDoc::outline_rect(const Rect& rect, TileMode mode, int stamp_col, in
             if (!is_border) continue;
 
             record_cell_internal(x, y);
-            MapCell& c = cells_[static_cast<size_t>(y * width + x)];
+            MapCell& c = cell_at(x, y);
             c.mode = mode;
             if (mode == TileMode::Terrain) {
                 c.roll = random_01();
@@ -398,7 +420,7 @@ void TilemapDoc::erase_outline_rect(const Rect& rect, int brush_size) {
             if (!is_border) continue;
 
             record_cell_internal(x, y);
-            cells_[static_cast<size_t>(y * width + x)] = MapCell{};
+            cell_at(x, y) = MapCell{};
         }
     }
     solve_all_autotiles();
@@ -413,7 +435,7 @@ void TilemapDoc::fill_rect(const Rect& rect, TileMode mode, int stamp_col, int s
             if (!in_bounds(x, y)) continue;
             if (!in_clip(x, y)) continue;
             record_cell_internal(x, y);
-            MapCell& c = cells_[static_cast<size_t>(y * width + x)];
+            MapCell& c = cell_at(x, y);
             c.mode = mode;
             if (mode == TileMode::Terrain) {
                 c.roll = random_01();
@@ -436,7 +458,7 @@ void TilemapDoc::erase_rect(const Rect& rect) {
         for (int x = rect.x; x < rect.right(); ++x) {
             if (!in_bounds(x, y)) continue;
             record_cell_internal(x, y);
-            cells_[static_cast<size_t>(y * width + x)] = MapCell{};
+            cell_at(x, y) = MapCell{};
         }
     }
     solve_all_autotiles();
@@ -477,7 +499,7 @@ void TilemapDoc::fill_ellipse(const Rect& rect, TileMode mode, int stamp_col, in
             if (!is_cell_in_ellipse(x, y, rect)) continue;
 
             record_cell_internal(x, y);
-            MapCell& c = cells_[static_cast<size_t>(y * width + x)];
+            MapCell& c = cell_at(x, y);
             c.mode = mode;
             if (mode == TileMode::Terrain) {
                 c.roll = random_01();
@@ -502,7 +524,7 @@ void TilemapDoc::outline_ellipse(const Rect& rect, TileMode mode, int stamp_col,
             if (!is_cell_in_outline_ellipse(x, y, rect, brush_size)) continue;
 
             record_cell_internal(x, y);
-            MapCell& c = cells_[static_cast<size_t>(y * width + x)];
+            MapCell& c = cell_at(x, y);
             c.mode = mode;
             if (mode == TileMode::Terrain) {
                 c.roll = random_01();
@@ -527,7 +549,7 @@ void TilemapDoc::erase_ellipse(const Rect& rect) {
             if (!in_bounds(x, y)) continue;
             if (!is_cell_in_ellipse(x, y, rect)) continue;
             record_cell_internal(x, y);
-            cells_[static_cast<size_t>(y * width + x)] = MapCell{};
+            cell_at(x, y) = MapCell{};
         }
     }
     solve_all_autotiles();
@@ -547,7 +569,7 @@ void TilemapDoc::erase_outline_ellipse(const Rect& rect, int brush_size) {
             if (!is_cell_in_outline_ellipse(x, y, rect, brush_size)) continue;
 
             record_cell_internal(x, y);
-            cells_[static_cast<size_t>(y * width + x)] = MapCell{};
+            cell_at(x, y) = MapCell{};
         }
     }
     solve_all_autotiles();
@@ -567,8 +589,8 @@ void TilemapDoc::flood_fill(int start_x, int start_y, TileMode mode, int stamp_c
 
     begin_stroke("Flood Fill");
     std::vector<Cell> queue = {{start_x, start_y}};
-    std::vector<bool> visited(static_cast<size_t>(width * height), false);
-    visited[static_cast<size_t>(start_y * width + start_x)] = true;
+    std::vector<bool> visited(total_cells(), false);
+    visited[cell_index(start_x, start_y)] = true;
 
     auto matches = [&](int x, int y) -> bool {
         if (!in_bounds(x, y)) return false;
@@ -589,7 +611,7 @@ void TilemapDoc::flood_fill(int start_x, int start_y, TileMode mode, int stamp_c
         queue.pop_back();
 
         record_cell_internal(cur.x, cur.y);
-        MapCell& c = cells_[static_cast<size_t>(cur.y * width + cur.x)];
+        MapCell& c = cell_at(cur.x, cur.y);
         c.mode = mode;
         if (mode == TileMode::Terrain) {
             c.roll = random_01();
@@ -605,9 +627,12 @@ void TilemapDoc::flood_fill(int start_x, int start_y, TileMode mode, int stamp_c
         for (int i = 0; i < 4; ++i) {
             const int nx = cur.x + dx[i];
             const int ny = cur.y + dy[i];
-            if (in_bounds(nx, ny) && !visited[static_cast<size_t>(ny * width + nx)] && matches(nx, ny)) {
-                visited[static_cast<size_t>(ny * width + nx)] = true;
-                queue.push_back({nx, ny});
+            if (in_bounds(nx, ny)) {
+                const size_t n_idx = cell_index(nx, ny);
+                if (!visited[n_idx] && matches(nx, ny)) {
+                    visited[n_idx] = true;
+                    queue.push_back({nx, ny});
+                }
             }
         }
     }
@@ -662,9 +687,9 @@ void TilemapDoc::paste_clipboard(int x, int y, const Clipboard& clip) {
     for (const auto& item : clip.cells) {
         const int dest_x = x + item.first.x;
         const int dest_y = y + item.first.y;
-        if (in_bounds(dest_x, dest_y)) {
+        if (in_bounds(dest_x, dest_y) && in_clip(dest_x, dest_y)) {
             record_cell_internal(dest_x, dest_y);
-            cells_[static_cast<size_t>(dest_y * width + dest_x)] = item.second;
+            cell_at(dest_x, dest_y) = item.second;
         }
     }
     solve_all_autotiles();
@@ -686,14 +711,20 @@ bool TilemapDoc::would_lose_tiles(int new_w, int new_h, int anchor_x, int anchor
     if (anchor_y > 0) top_add = dy;
     else if (anchor_y == 0) top_add = dy / 2;
 
-    for (int y = 0; y < height; ++y) {
-        for (int x = 0; x < width; ++x) {
+    for (int y = -buffer; y < height + buffer; ++y) {
+        for (int x = -buffer; x < width + buffer; ++x) {
             const MapCell& c = get_cell(x, y);
             if (!c.is_empty()) {
                 const int nx = x + left_add;
                 const int ny = y + top_add;
-                if (nx < 0 || ny < 0 || nx >= new_w || ny >= new_h) {
-                    return true;
+                if (in_active_bounds(x, y)) {
+                    if (nx < 0 || ny < 0 || nx >= new_w || ny >= new_h) {
+                        return true;
+                    }
+                } else {
+                    if (nx < -buffer || ny < -buffer || nx >= new_w + buffer || ny >= new_h + buffer) {
+                        return true;
+                    }
                 }
             }
         }
@@ -718,19 +749,22 @@ void TilemapDoc::resize(int new_w, int new_h, int anchor_x, int anchor_y) {
     else if (anchor_y == 0) top_add = dy / 2;
 
     // Record all existing cells for undo
-    for (int y = 0; y < height; ++y) {
-        for (int x = 0; x < width; ++x) {
+    for (int y = -buffer; y < height + buffer; ++y) {
+        for (int x = -buffer; x < width + buffer; ++x) {
             record_cell_internal(x, y);
         }
     }
 
-    std::vector<MapCell> new_cells(static_cast<size_t>(new_w * new_h), MapCell{});
-    for (int y = 0; y < height; ++y) {
-        for (int x = 0; x < width; ++x) {
+    const int new_tot_w = new_w + 2 * buffer;
+    const int new_tot_h = new_h + 2 * buffer;
+    std::vector<MapCell> new_cells(static_cast<size_t>(new_tot_w * new_tot_h), MapCell{});
+    for (int y = -buffer; y < height + buffer; ++y) {
+        for (int x = -buffer; x < width + buffer; ++x) {
             const int nx = x + left_add;
             const int ny = y + top_add;
-            if (nx >= 0 && ny >= 0 && nx < new_w && ny < new_h) {
-                new_cells[static_cast<size_t>(ny * new_w + nx)] = cells_[static_cast<size_t>(y * width + x)];
+            if (nx >= -buffer && ny >= -buffer && nx < new_w + buffer && ny < new_h + buffer) {
+                const size_t new_idx = static_cast<size_t>((ny + buffer) * new_tot_w + (nx + buffer));
+                new_cells[new_idx] = get_cell(x, y);
             }
         }
     }

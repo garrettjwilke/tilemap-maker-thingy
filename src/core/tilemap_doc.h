@@ -54,6 +54,7 @@ public:
     int origin_x = 0;
     int origin_y = 0;
     int tile_size = 16;
+    int buffer = 1;   // 1 tile buffer around the outside
     Tileset tileset;
     std::vector<CollisionType> collision_types;
 
@@ -62,8 +63,11 @@ public:
     void reset(int w = 20, int h = 14, int ts = 16);
     void reset_8px(int w_8px, int h_8px, int ts = 16);
 
-    // Dimension metrics in 8x8 tile units and pixel units
+    // Dimension metrics in cells, 8x8 tile units, and pixel units
     int factor() const { return (tile_size == 8) ? 1 : 2; }
+    int total_width() const { return width + 2 * buffer; }
+    int total_height() const { return height + 2 * buffer; }
+    size_t total_cells() const { return static_cast<size_t>(total_width() * total_height()); }
     int width_8px() const { return width * factor(); }
     int height_8px() const { return height * factor(); }
     int pixel_width() const { return width * tile_size; }
@@ -75,12 +79,25 @@ public:
     void set_collision_type_color(uint8_t id, Rgb color);
     const CollisionType* get_collision_type(uint8_t id) const;
 
+    // Bounds checking
     bool in_bounds(int x, int y) const {
+        return x >= -buffer && y >= -buffer && x < width + buffer && y < height + buffer;
+    }
+    bool in_active_bounds(int x, int y) const {
         return x >= 0 && y >= 0 && x < width && y < height;
+    }
+    bool is_buffer_cell(int x, int y) const {
+        return in_bounds(x, y) && !in_active_bounds(x, y);
+    }
+    size_t cell_index(int x, int y) const {
+        return static_cast<size_t>((y + buffer) * total_width() + (x + buffer));
     }
 
     const MapCell& get_cell(int x, int y) const;
     void set_cell(int x, int y, const MapCell& cell);
+    MapCell& cell_at(int x, int y);
+    const MapCell& cell_at(int x, int y) const;
+    void clear_cells();
 
     bool is_terrain(int x, int y) const {
         if (!in_bounds(x, y)) return false;

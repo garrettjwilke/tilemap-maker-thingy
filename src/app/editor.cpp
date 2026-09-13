@@ -569,15 +569,19 @@ static bool is_cell_in_outline_ellipse(int x, int y, const Rect& rect, int brush
 }
 
 static Rect compute_drag_rect(int start_x, int start_y, int curr_x, int curr_y, bool square) {
-    start_x = std::clamp(start_x, 0, g_ed.doc.width - 1);
-    start_y = std::clamp(start_y, 0, g_ed.doc.height - 1);
+    const int min_x = -g_ed.doc.buffer;
+    const int min_y = -g_ed.doc.buffer;
+    const int max_x = g_ed.doc.width + g_ed.doc.buffer - 1;
+    const int max_y = g_ed.doc.height + g_ed.doc.buffer - 1;
+    start_x = std::clamp(start_x, min_x, max_x);
+    start_y = std::clamp(start_y, min_y, max_y);
     const int dx = curr_x - start_x;
     const int dy = curr_y - start_y;
     const int sx = (dx >= 0) ? 1 : -1;
     const int sy = (dy >= 0) ? 1 : -1;
     if (square) {
-        const int max_side_x = (sx >= 0) ? (g_ed.doc.width - 1 - start_x) : start_x;
-        const int max_side_y = (sy >= 0) ? (g_ed.doc.height - 1 - start_y) : start_y;
+        const int max_side_x = (sx >= 0) ? (max_x - start_x) : (start_x - min_x);
+        const int max_side_y = (sy >= 0) ? (max_y - start_y) : (start_y - min_y);
         int side = std::max(std::abs(dx), std::abs(dy));
         side = std::min(side, std::min(max_side_x, max_side_y));
         const int target_x = start_x + sx * side;
@@ -586,8 +590,8 @@ static Rect compute_drag_rect(int start_x, int start_y, int curr_x, int curr_y, 
         const int ry = std::min(start_y, target_y);
         return {rx, ry, side + 1, side + 1};
     } else {
-        const int cx_clamped = std::clamp(curr_x, 0, g_ed.doc.width - 1);
-        const int cy_clamped = std::clamp(curr_y, 0, g_ed.doc.height - 1);
+        const int cx_clamped = std::clamp(curr_x, min_x, max_x);
+        const int cy_clamped = std::clamp(curr_y, min_y, max_y);
         const int rx = std::min(start_x, cx_clamped);
         const int ry = std::min(start_y, cy_clamped);
         const int rx2 = std::max(start_x, cx_clamped);
@@ -1097,9 +1101,7 @@ static void draw_tool_options_row() {
             ImGui::TextDisabled("|");
             ImGui::SameLine();
             if (ImGui::Button("Clear Entire Map##EraseAll")) {
-                g_ed.doc.begin_stroke("Clear Map");
-                g_ed.doc.erase_rect({0, 0, g_ed.doc.width, g_ed.doc.height});
-                g_ed.doc.end_stroke();
+                g_ed.doc.clear_cells();
                 g_ed.status_msg = "Cleared map.";
             }
             if (ImGui::IsItemHovered()) {
@@ -1529,11 +1531,18 @@ static void draw_canvas_viewport_content() {
     const float map_x1 = cell_to_screen_x(g_ed.doc.width);
     const float map_y1 = cell_to_screen_y(g_ed.doc.height);
 
-    // Draw map background
-    const ImU32 map_bg_col = g_ed.settings.dark ? IM_COL32(28, 30, 35, 255) : IM_COL32(245, 246, 250, 255);
+    const float buf_x0 = cell_to_screen_x(-g_ed.doc.buffer);
+    const float buf_y0 = cell_to_screen_y(-g_ed.doc.buffer);
+    const float buf_x1 = cell_to_screen_x(g_ed.doc.width + g_ed.doc.buffer);
+    const float buf_y1 = cell_to_screen_y(g_ed.doc.height + g_ed.doc.buffer);
+
+    // Draw canvas backgrounds: outer buffer zone (outside zone) in dark gray and active map
+    const ImU32 buf_bg_col = g_ed.settings.dark ? IM_COL32(16, 18, 22, 255) : IM_COL32(48, 52, 60, 255);
+    const ImU32 map_bg_col = g_ed.settings.dark ? IM_COL32(30, 33, 40, 255) : IM_COL32(245, 246, 250, 255);
+    draw_list->AddRectFilled(ImVec2(buf_x0, buf_y0), ImVec2(buf_x1, buf_y1), buf_bg_col);
     draw_list->AddRectFilled(ImVec2(map_x0, map_y0), ImVec2(map_x1, map_y1), map_bg_col);
 
-    // Render placed tiles with nearest-neighbor point sampling
+    // Render placed tiles (across map and buffer) with nearest-neighbor point sampling
     const ImGuiPlatformIO& platform_io = ImGui::GetPlatformIO();
     if (platform_io.DrawCallback_SetSamplerNearest != nullptr) {
         draw_list->AddCallback(platform_io.DrawCallback_SetSamplerNearest, nullptr);
@@ -1544,8 +1553,8 @@ static void draw_canvas_viewport_content() {
     const float inv_tex_h = has_texture ? (1.0f / static_cast<float>(g_ed.texture_h)) : 1.0f;
     const int ts = g_ed.doc.tile_size;
 
-    for (int cy = 0; cy < g_ed.doc.height; ++cy) {
-        for (int cx = 0; cx < g_ed.doc.width; ++cx) {
+    for (int cy = -g_ed.doc.buffer; cy < g_ed.doc.height + g_ed.doc.buffer; ++cy) {
+        for (int cx = -g_ed.doc.buffer; cx < g_ed.doc.width + g_ed.doc.buffer; ++cx) {
             const MapCell& cell = g_ed.doc.get_cell(cx, cy);
             if (cell.is_empty()) continue;
 
@@ -1570,16 +1579,29 @@ static void draw_canvas_viewport_content() {
         }
     }
 
+    // Dark gray tint overlay over buffer area (drawn tiles in the buffer appear underneath this tint)
+    if (g_ed.doc.buffer > 0) {
+        const ImU32 buf_tint_col = IM_COL32(12, 14, 18, 160);
+        // Top buffer strip
+        draw_list->AddRectFilled(ImVec2(buf_x0, buf_y0), ImVec2(buf_x1, map_y0), buf_tint_col);
+        // Bottom buffer strip
+        draw_list->AddRectFilled(ImVec2(buf_x0, map_y1), ImVec2(buf_x1, buf_y1), buf_tint_col);
+        // Left buffer strip
+        draw_list->AddRectFilled(ImVec2(buf_x0, map_y0), ImVec2(map_x0, map_y1), buf_tint_col);
+        // Right buffer strip
+        draw_list->AddRectFilled(ImVec2(map_x1, map_y0), ImVec2(buf_x1, map_y1), buf_tint_col);
+    }
+
     // Draw grid lines
     if (g_ed.settings.grid_lines && tile_px >= 4.0f) {
-        const ImU32 grid_col = g_ed.settings.dark ? IM_COL32(56, 60, 68, 140) : IM_COL32(165, 170, 180, 160);
-        for (int x = 0; x <= g_ed.doc.width; ++x) {
+        const ImU32 grid_col = g_ed.settings.dark ? IM_COL32(60, 65, 75, 140) : IM_COL32(150, 155, 165, 160);
+        for (int x = -g_ed.doc.buffer; x <= g_ed.doc.width + g_ed.doc.buffer; ++x) {
             const float gx = cell_to_screen_x(x);
-            draw_list->AddLine(ImVec2(gx, map_y0), ImVec2(gx, map_y1), grid_col);
+            draw_list->AddLine(ImVec2(gx, buf_y0), ImVec2(gx, buf_y1), grid_col);
         }
-        for (int y = 0; y <= g_ed.doc.height; ++y) {
+        for (int y = -g_ed.doc.buffer; y <= g_ed.doc.height + g_ed.doc.buffer; ++y) {
             const float gy = cell_to_screen_y(y);
-            draw_list->AddLine(ImVec2(map_x0, gy), ImVec2(map_x1, gy), grid_col);
+            draw_list->AddLine(ImVec2(buf_x0, gy), ImVec2(buf_x1, gy), grid_col);
         }
     }
 
@@ -1613,7 +1635,10 @@ static void draw_canvas_viewport_content() {
         }
     }
 
-    // Map boundary border
+    // Outer buffer border (subtle)
+    draw_list->AddRect(ImVec2(buf_x0, buf_y0), ImVec2(buf_x1, buf_y1), IM_COL32(70, 75, 85, 200), 0.0f, 0, 1.0f);
+
+    // Active export map boundary border (prominent blue)
     draw_list->AddRect(ImVec2(map_x0, map_y0), ImVec2(map_x1, map_y1), IM_COL32(90, 140, 230, 255), 0.0f, 0, 2.0f);
 
     // Mouse coordinates in map cell units
@@ -1626,7 +1651,7 @@ static void draw_canvas_viewport_content() {
     if (in_map) {
         g_ed.hovered_cell = {cell_x, cell_y};
     } else {
-        g_ed.hovered_cell = {-1, -1};
+        g_ed.hovered_cell = {-999999, -999999};
     }
 
     // Draw floating preview (for paste or moving selection)
@@ -1811,10 +1836,12 @@ static void draw_canvas_viewport_content() {
             if (ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
                 const int dx = cell_x - g_ed.drag_start.x;
                 const int dy = cell_y - g_ed.drag_start.y;
-                const int max_x = std::max(0, g_ed.doc.width - g_ed.clipboard.w);
-                const int max_y = std::max(0, g_ed.doc.height - g_ed.clipboard.h);
-                g_ed.paste_pos.x = std::clamp(g_ed.paste_drag_origin.x + dx, 0, max_x);
-                g_ed.paste_pos.y = std::clamp(g_ed.paste_drag_origin.y + dy, 0, max_y);
+                const int min_x = -g_ed.doc.buffer;
+                const int min_y = -g_ed.doc.buffer;
+                const int max_x = g_ed.doc.width + g_ed.doc.buffer - g_ed.clipboard.w;
+                const int max_y = g_ed.doc.height + g_ed.doc.buffer - g_ed.clipboard.h;
+                g_ed.paste_pos.x = std::clamp(g_ed.paste_drag_origin.x + dx, min_x, std::max(min_x, max_x));
+                g_ed.paste_pos.y = std::clamp(g_ed.paste_drag_origin.y + dy, min_y, std::max(min_y, max_y));
                 g_ed.selection.x = g_ed.paste_pos.x;
                 g_ed.selection.y = g_ed.paste_pos.y;
                 g_ed.doc.set_clip_rect(&g_ed.selection);
@@ -1826,10 +1853,12 @@ static void draw_canvas_viewport_content() {
             if (ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
                 const int dx = cell_x - g_ed.drag_start.x;
                 const int dy = cell_y - g_ed.drag_start.y;
-                const int max_x = std::max(0, g_ed.doc.width - g_ed.selection.w);
-                const int max_y = std::max(0, g_ed.doc.height - g_ed.selection.h);
-                g_ed.selection.x = std::clamp(g_ed.selection_drag_origin.x + dx, 0, max_x);
-                g_ed.selection.y = std::clamp(g_ed.selection_drag_origin.y + dy, 0, max_y);
+                const int min_x = -g_ed.doc.buffer;
+                const int min_y = -g_ed.doc.buffer;
+                const int max_x = g_ed.doc.width + g_ed.doc.buffer - g_ed.selection.w;
+                const int max_y = g_ed.doc.height + g_ed.doc.buffer - g_ed.selection.h;
+                g_ed.selection.x = std::clamp(g_ed.selection_drag_origin.x + dx, min_x, std::max(min_x, max_x));
+                g_ed.selection.y = std::clamp(g_ed.selection_drag_origin.y + dy, min_y, std::max(min_y, max_y));
                 g_ed.doc.set_clip_rect(&g_ed.selection, g_ed.selection_is_circle ? TilemapDoc::ClipShape::Ellipse : TilemapDoc::ClipShape::Rect);
             } else {
                 g_ed.is_moving_selection = false;
@@ -2230,9 +2259,7 @@ static void draw_sidebar_content(SDL_Renderer* renderer) {
         g_ed.show_resize_modal = true;
     }
     if (ImGui::Button("Clear Map", ImVec2(-1, 26))) {
-        g_ed.doc.begin_stroke("Clear Map");
-        g_ed.doc.erase_rect({0, 0, g_ed.doc.width, g_ed.doc.height});
-        g_ed.doc.end_stroke();
+        g_ed.doc.clear_cells();
         g_ed.status_msg = "Cleared map.";
     }
 
@@ -2559,10 +2586,12 @@ int run_editor() {
                     if (ImGui::IsKeyPressed(ImGuiKey_UpArrow, true))    dy -= 1;
                     if (ImGui::IsKeyPressed(ImGuiKey_DownArrow, true))  dy += 1;
                     if (dx != 0 || dy != 0) {
-                        const int max_x = std::max(0, g_ed.doc.width - g_ed.clipboard.w);
-                        const int max_y = std::max(0, g_ed.doc.height - g_ed.clipboard.h);
-                        g_ed.paste_pos.x = std::clamp(g_ed.paste_pos.x + dx, 0, max_x);
-                        g_ed.paste_pos.y = std::clamp(g_ed.paste_pos.y + dy, 0, max_y);
+                        const int min_x = -g_ed.doc.buffer;
+                        const int min_y = -g_ed.doc.buffer;
+                        const int max_x = g_ed.doc.width + g_ed.doc.buffer - g_ed.clipboard.w;
+                        const int max_y = g_ed.doc.height + g_ed.doc.buffer - g_ed.clipboard.h;
+                        g_ed.paste_pos.x = std::clamp(g_ed.paste_pos.x + dx, min_x, std::max(min_x, max_x));
+                        g_ed.paste_pos.y = std::clamp(g_ed.paste_pos.y + dy, min_y, std::max(min_y, max_y));
                         g_ed.selection.x = g_ed.paste_pos.x;
                         g_ed.selection.y = g_ed.paste_pos.y;
                         g_ed.doc.set_clip_rect(&g_ed.selection, TilemapDoc::ClipShape::Rect);
@@ -2586,10 +2615,12 @@ int run_editor() {
                     if (ImGui::IsKeyPressed(ImGuiKey_UpArrow, true))    dy -= 1;
                     if (ImGui::IsKeyPressed(ImGuiKey_DownArrow, true))  dy += 1;
                     if (dx != 0 || dy != 0) {
-                        const int max_x = std::max(0, g_ed.doc.width - g_ed.selection.w);
-                        const int max_y = std::max(0, g_ed.doc.height - g_ed.selection.h);
-                        const int target_x = std::clamp(g_ed.selection.x + dx, 0, max_x);
-                        const int target_y = std::clamp(g_ed.selection.y + dy, 0, max_y);
+                        const int min_x = -g_ed.doc.buffer;
+                        const int min_y = -g_ed.doc.buffer;
+                        const int max_x = g_ed.doc.width + g_ed.doc.buffer - g_ed.selection.w;
+                        const int max_y = g_ed.doc.height + g_ed.doc.buffer - g_ed.selection.h;
+                        const int target_x = std::clamp(g_ed.selection.x + dx, min_x, std::max(min_x, max_x));
+                        const int target_y = std::clamp(g_ed.selection.y + dy, min_y, std::max(min_y, max_y));
                         if (target_x != g_ed.selection.x || target_y != g_ed.selection.y) {
                             if (!g_ed.selection_lifted) {
                                 g_ed.selection_origin = g_ed.selection;
@@ -2806,10 +2837,16 @@ int run_editor() {
                 const std::string act_name = (g_ed.active_collision_type == 0) ? "None" : (act ? act->name : "Type " + std::to_string(g_ed.active_collision_type));
                 ImGui::Text("Collision Mode | Active: %s | %d Types", act_name.c_str(), static_cast<int>(g_ed.doc.collision_types.size()));
             }
-        } else if (g_ed.hovered_cell.x >= 0 && g_ed.hovered_cell.y >= 0) {
-            ImGui::Text("Cell: (%d, %d) | Map: %dx%d - %dx%d px", g_ed.hovered_cell.x, g_ed.hovered_cell.y,
-                        g_ed.doc.width_8px(), g_ed.doc.height_8px(),
-                        g_ed.doc.pixel_width(), g_ed.doc.pixel_height());
+        } else if (g_ed.doc.in_bounds(g_ed.hovered_cell.x, g_ed.hovered_cell.y)) {
+            if (g_ed.doc.in_active_bounds(g_ed.hovered_cell.x, g_ed.hovered_cell.y)) {
+                ImGui::Text("Cell: (%d, %d) | Map: %dx%d - %dx%d px", g_ed.hovered_cell.x, g_ed.hovered_cell.y,
+                            g_ed.doc.width_8px(), g_ed.doc.height_8px(),
+                            g_ed.doc.pixel_width(), g_ed.doc.pixel_height());
+            } else {
+                ImGui::Text("Cell: (%d, %d) [Outside Buffer] | Map: %dx%d - %dx%d px", g_ed.hovered_cell.x, g_ed.hovered_cell.y,
+                            g_ed.doc.width_8px(), g_ed.doc.height_8px(),
+                            g_ed.doc.pixel_width(), g_ed.doc.pixel_height());
+            }
         } else {
             ImGui::Text("Map: %dx%d - %dx%d px",
                         g_ed.doc.width_8px(), g_ed.doc.height_8px(),

@@ -1052,6 +1052,109 @@ void test_default_size_and_8px_dimensions() {
     expect(doc16.pixel_width() == 640 && doc16.pixel_height() == 448, "doc16 pixel resolution should be 640x448");
 }
 
+void test_buffer_and_outside_zone() {
+    using namespace tmm;
+
+    // 1. Check default buffer properties
+    TilemapDoc doc(20, 14, 16);
+    expect(doc.buffer == 1, "default buffer should be 1 tile");
+    expect(doc.total_width() == 22, "total_width should be 20 + 2 = 22");
+    expect(doc.total_height() == 16, "total_height should be 14 + 2 = 16");
+    expect(doc.total_cells() == 22 * 16, "total_cells should be 22 * 16 = 352");
+
+    // Bounds checking
+    expect(doc.in_bounds(-1, -1), "(-1, -1) should be in_bounds");
+    expect(doc.in_bounds(20, 14), "(20, 14) should be in_bounds");
+    expect(!doc.in_bounds(-2, 0), "(-2, 0) should NOT be in_bounds");
+    expect(!doc.in_bounds(21, 0), "(21, 0) should NOT be in_bounds");
+    expect(!doc.in_bounds(0, -2), "(0, -2) should NOT be in_bounds");
+    expect(!doc.in_bounds(0, 15), "(0, 15) should NOT be in_bounds");
+
+    expect(doc.in_active_bounds(0, 0), "(0, 0) is active bounds");
+    expect(doc.in_active_bounds(19, 13), "(19, 13) is active bounds");
+    expect(!doc.in_active_bounds(-1, 0), "(-1, 0) is NOT active bounds");
+    expect(!doc.in_active_bounds(20, 0), "(20, 0) is NOT active bounds");
+    expect(doc.is_buffer_cell(-1, 0), "(-1, 0) is a buffer cell");
+    expect(!doc.is_buffer_cell(0, 0), "(0, 0) is NOT a buffer cell");
+
+    // 2. Autotiling: painting active area vs buffer area
+    // Paint terrain across all active cells 0..19, 0..13
+    for (int y = 0; y < 14; ++y) {
+        for (int x = 0; x < 20; ++x) {
+            MapCell c;
+            c.mode = TileMode::Terrain;
+            doc.set_cell(x, y, c);
+        }
+    }
+    doc.solve_all_autotiles();
+
+    // Cell (0, 0) has no West or North neighbor in the buffer yet, so it is a corner edge
+    const MapCell c00_before = doc.get_cell(0, 0);
+    expect(c00_before.atlas_x != 9 || c00_before.atlas_y != 2,
+           "cell (0, 0) without buffer painted should be an edge tile, not center (9, 2)");
+
+    // Now paint the outside buffer zone with terrain (filling the 1-tile ring around the outside)
+    for (int y = -1; y <= 14; ++y) {
+        for (int x = -1; x <= 20; ++x) {
+            if (doc.is_buffer_cell(x, y)) {
+                MapCell c;
+                c.mode = TileMode::Terrain;
+                doc.set_cell(x, y, c);
+            }
+        }
+    }
+    doc.solve_all_autotiles();
+
+    // Now every cell in the active map (including cell (0, 0) and (19, 13)) has terrain neighbors on all 8 sides!
+    const MapCell c00_after = doc.get_cell(0, 0);
+    expect(c00_after.atlas_x == 9 && c00_after.atlas_y == 2,
+           "cell (0, 0) with buffer painted should now be a seamless center tile (9, 2)");
+    const MapCell c_br_after = doc.get_cell(19, 13);
+    expect(c_br_after.atlas_x == 9 && c_br_after.atlas_y == 2,
+           "bottom-right active cell (19, 13) should also be a seamless center tile (9, 2)");
+
+    // Meanwhile, the edge is out in the buffer (e.g. at (-1, -1))
+    const MapCell c_buf = doc.get_cell(-1, -1);
+    expect(c_buf.atlas_x != 9 || c_buf.atlas_y != 2,
+           "buffer corner cell (-1, -1) should hold the outer edge tile");
+
+    // 3. Composite PNG export ignores buffer and outputs exact active map dimensions
+    const std::string ts_path = temp_path("test_buf_ts.png");
+    expect(create_dummy_tileset_png(ts_path, 16), "create dummy tileset");
+    expect(doc.tileset.load_from_file(ts_path), "load dummy tileset");
+    const std::string out_png = temp_path("test_buf_out.png");
+    expect(export_composite_png(doc, out_png).empty(), "export composite png");
+
+    Image im{};
+    expect(load_png(out_png.c_str(), &im), "load exported image");
+    expect(im.w == 320 && im.h == 224, "exported PNG should be active map size 320x224, not 352x256");
+    image_free(&im);
+    std::remove(out_png.c_str());
+    std::remove(ts_path.c_str());
+
+    // 4. Collision generation only covers active map
+    CollisionGrid cg = doc.build_collision_grid();
+    expect(cg.width == 40 && cg.height == 28, "collision grid is 40x28 (active map)");
+
+    // 5. JSON save & load round-trip preserves buffer cells
+    const std::string map_json_path = temp_path("test_buf_map.json");
+    expect(save_map_json(doc, map_json_path).empty(), "save map JSON with buffer");
+
+    TilemapDoc reloaded;
+    expect(load_map_json(reloaded, map_json_path).empty(), "load map JSON with buffer");
+    expect(reloaded.buffer == 1, "reloaded buffer is 1");
+    expect(reloaded.width == 20 && reloaded.height == 14, "reloaded active dimensions 20x14");
+    expect(reloaded.get_cell(-1, -1).mode == TileMode::Terrain, "reloaded preserves buffer cell at (-1, -1)");
+    expect(reloaded.get_cell(0, 0).atlas_x == 9 && reloaded.get_cell(0, 0).atlas_y == 2,
+           "reloaded preserves solved seamless center tile at (0, 0)");
+    std::remove(map_json_path.c_str());
+
+    // 6. Clear map clears active map AND buffer cells
+    doc.clear_cells();
+    expect(doc.get_cell(0, 0).is_empty(), "active cell cleared");
+    expect(doc.get_cell(-1, -1).is_empty(), "buffer cell cleared");
+}
+
 } // namespace
 
 int main() {
@@ -1070,6 +1173,7 @@ int main() {
     test_brush_size_and_tools();
     test_circle_mode_and_clipping();
     test_default_size_and_8px_dimensions();
+    test_buffer_and_outside_zone();
 
     if (g_fails) {
         std::cerr << g_fails << " test(s) failed\n";
