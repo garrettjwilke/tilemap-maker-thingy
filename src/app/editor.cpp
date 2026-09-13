@@ -306,8 +306,8 @@ static void persist_settings(SDL_Window* window = nullptr) {
     }
     g_ed.settings.sidebar_w = g_ed.sidebar_w;
     g_ed.settings.zoom = g_ed.zoom;
-    g_ed.settings.brush_size = g_ed.brush_size;
-    g_ed.settings.paint_mode = (g_ed.paint_mode == TileMode::Terrain ? 0 : 1);
+    g_ed.settings.brush_size = 1;
+    g_ed.settings.paint_mode = 0; // Default to Terrain mode
     if (!g_ed.current_map_path.empty()) {
         g_ed.settings.last_map_path = g_ed.current_map_path;
     }
@@ -2440,10 +2440,15 @@ int run_editor() {
     if (g_ed.settings.zoom >= 0.25f && g_ed.settings.zoom <= 16.0f) {
         g_ed.zoom = g_ed.settings.zoom;
     }
-    if (g_ed.settings.brush_size >= 1 && g_ed.settings.brush_size <= 4) {
-        g_ed.brush_size = g_ed.settings.brush_size;
-    }
-    g_ed.paint_mode = (g_ed.settings.paint_mode == 1) ? TileMode::Stamp : TileMode::Terrain;
+    // Tool options shift back to clean defaults on app startup
+    g_ed.tool = Tool::Paint;
+    g_ed.paint_mode = TileMode::Terrain;
+    g_ed.brush_size = 1;
+    g_ed.stamp_col = 9;
+    g_ed.stamp_row = 2;
+    g_ed.rect_fill = true;
+    g_ed.rect_circle = false;
+    g_ed.view_mode = EditorViewMode::Tilemap;
 
     const int win_w = (g_ed.settings.window_w >= 640) ? g_ed.settings.window_w : 1280;
     const int win_h = (g_ed.settings.window_h >= 480) ? g_ed.settings.window_h : 800;
