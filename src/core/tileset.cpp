@@ -583,17 +583,23 @@ bool Tileset::load_terrain_file(const std::string& path) {
     }
     if (!dir.empty()) png_candidates.push_back(dir + "/" + stem + ".png");
     png_candidates.push_back(stem + ".png");
+    if (!png_path.empty()) {
+        png_candidates.push_back(png_path);
+    }
 
     std::string resolved_png;
     for (const auto& cand : png_candidates) {
-        std::ifstream test(cand);
-        if (test.good()) {
+        if (file_exists(cand)) {
             resolved_png = cand;
             break;
         }
     }
 
     if (resolved_png.empty()) {
+        if (is_valid()) {
+            parse_terrain_text(text, path);
+            return true;
+        }
         error = "Could not find matching PNG image for terrain file: " + (ts_name.empty() ? (stem + ".png") : ts_name);
         return false;
     }

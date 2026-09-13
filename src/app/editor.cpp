@@ -328,14 +328,13 @@ static void persist_settings(SDL_Window* window = nullptr) {
 }
 
 static void open_tileset_dialog(SDL_Renderer* renderer) {
-    nfdu8filteritem_t filters[4] = {
-        {"Tileset Files (*.png, *.h, *.terrain, *.json)", "png,h,terrain,json"},
+    nfdu8filteritem_t filters[3] = {
+        {"Tileset Files (*.png, *.terrain)", "png,terrain"},
         {"PNG Images (*.png)", "png"},
-        {"C Headers (*.h)", "h"},
-        {"Terrain Metadata (*.terrain, *.json)", "terrain,json"}
+        {"Terrain Files (*.terrain)", "terrain"}
     };
     nfdu8char_t* out_path = nullptr;
-    nfdresult_t res = NFD_OpenDialogU8(&out_path, filters, 4, nullptr);
+    nfdresult_t res = NFD_OpenDialogU8(&out_path, filters, 3, nullptr);
     if (res == NFD_OKAY && out_path) {
         if (g_ed.doc.tileset.load_from_file(out_path)) {
             const int old_ts = g_ed.doc.tile_size;
@@ -358,44 +357,6 @@ static void open_tileset_dialog(SDL_Renderer* renderer) {
             persist_settings();
         } else {
             g_ed.status_msg = "Error loading tileset: " + g_ed.doc.tileset.error;
-        }
-        NFD_FreePathU8(out_path);
-    }
-}
-
-static void open_terrain_dialog(SDL_Renderer* renderer) {
-    nfdu8filteritem_t filters[3] = {
-        {"Terrain / Variants (*.h, *.terrain, *.json)", "h,terrain,json"},
-        {"C Headers (*.h)", "h"},
-        {"Terrain Metadata (*.terrain, *.json)", "terrain,json"}
-    };
-    nfdu8char_t* out_path = nullptr;
-    nfdresult_t res = NFD_OpenDialogU8(&out_path, filters, 3, nullptr);
-    if (res == NFD_OKAY && out_path) {
-        bool ok = false;
-        if (g_ed.doc.tileset.is_valid()) {
-            ok = g_ed.doc.tileset.import_variants_file(out_path);
-        } else {
-            ok = g_ed.doc.tileset.load_from_file(out_path);
-            if (ok) {
-                const int old_ts = g_ed.doc.tile_size;
-                const int new_ts = g_ed.doc.tileset.tile_size;
-                if (old_ts != new_ts) {
-                    const int w8 = g_ed.doc.width_8px();
-                    const int h8 = g_ed.doc.height_8px();
-                    g_ed.doc.tile_size = new_ts;
-                    g_ed.doc.resize_8px(w8, h8);
-                }
-                update_tileset_texture(renderer);
-            }
-        }
-        if (ok) {
-            g_ed.doc.solve_all_autotiles();
-            g_ed.status_msg = "Imported terrain (" + std::to_string(g_ed.doc.tileset.variants.size()) +
-                              " variants): " + std::string(out_path);
-            persist_settings();
-        } else {
-            g_ed.status_msg = "Error importing terrain/variants: " + g_ed.doc.tileset.error;
         }
         NFD_FreePathU8(out_path);
     }
@@ -2850,9 +2811,6 @@ static void draw_sidebar_content(SDL_Renderer* renderer) {
     if (ImGui::Button("Import Tileset…", ImVec2(-1, 28))) {
         open_tileset_dialog(renderer);
     }
-    if (ImGui::Button("Import Terrain / Variants…", ImVec2(-1, 24))) {
-        open_terrain_dialog(renderer);
-    }
 
     if (g_ed.doc.tileset.is_valid()) {
         auto short_name = [](const std::string& path) -> std::string {
@@ -2957,6 +2915,21 @@ static void draw_sidebar_content(SDL_Renderer* renderer) {
             }
         }
         ImGui::EndChild();
+
+        // Button under tiles palette to view/edit tileset terrain
+        ImGui::Spacing();
+        const bool in_terrain = (g_ed.view_mode == EditorViewMode::TilesetTerrain);
+        {
+            ScopedStyleColor active_col(ImGuiCol_Button, ImVec4(0.20f, 0.52f, 0.88f, 1.0f), in_terrain);
+            const char* btn_label = in_terrain ? "✓ Editing Terrain (Click to Return)" : "Edit Terrain";
+            if (ImGui::Button(btn_label, ImVec2(-1, 28))) {
+                g_ed.view_mode = in_terrain ? EditorViewMode::Tilemap : EditorViewMode::TilesetTerrain;
+            }
+        }
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip(in_terrain ? "Currently in Tileset Terrain mode. Click to return to Tilemap."
+                                         : "Open the Tileset Terrain view to inspect, connect, and configure variants.");
+        }
 
         if (g_ed.view_mode == EditorViewMode::TilesetTerrain) {
             ImGui::Spacing();
@@ -3509,9 +3482,6 @@ int run_editor() {
                 }
                 if (ImGui::MenuItem("Import Tileset…", "Ctrl+I")) {
                     open_tileset_dialog(renderer);
-                }
-                if (ImGui::MenuItem("Import Terrain / Variants…")) {
-                    open_terrain_dialog(renderer);
                 }
                 ImGui::Separator();
                 if (ImGui::MenuItem("Export All", "Ctrl+E")) {

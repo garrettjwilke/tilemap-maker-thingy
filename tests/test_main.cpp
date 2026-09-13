@@ -1302,6 +1302,11 @@ void test_tileset_terrain_and_variants() {
     expect(lv2 != nullptr && lv2->root_x == 1 && lv2->root_y == 0, "loaded variant 2 mapping");
     expect(std::abs(lv2->probability - 0.50f) < 0.01f, "loaded variant 2 probability");
 
+    // Unified import: load_from_file handles .terrain directly
+    Tileset unified_ts;
+    expect(unified_ts.load_from_file(t_save_path), "load_from_file loads .terrain file");
+    expect(unified_ts.variants.size() == 2, "unified load_from_file has 2 variants");
+
     std::remove(t_save_path.c_str());
     std::remove(t_export_path.c_str());
     std::remove(ts_png.c_str());
