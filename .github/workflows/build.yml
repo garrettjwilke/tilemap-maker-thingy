@@ -2,9 +2,30 @@ name: Build
 
 on:
   workflow_dispatch:
+    inputs:
+      create_release:
+        description: 'Create a GitHub Release'
+        type: boolean
+        default: true
+      tag_name:
+        description: 'Tag name (e.g. v0.1.0, or leave empty for auto-tag)'
+        type: string
+        default: ''
+      release_title:
+        description: 'Release title (leave empty to use tag name)'
+        type: string
+        default: ''
+      draft:
+        description: 'Save as draft'
+        type: boolean
+        default: false
+      prerelease:
+        description: 'Mark as pre-release'
+        type: boolean
+        default: false
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build:
@@ -81,3 +102,57 @@ jobs:
         with:
           name: tilemap-maker-${{ matrix.os }}
           path: dist/*
+
+  release:
+    name: Create Release
+    needs: build
+    if: ${{ github.event.inputs.create_release == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Package release assets
+        run: |
+          mkdir -p release-assets
+          
+          # Linux
+          if [ -f artifacts/tilemap-maker-ubuntu-latest/tilemap-maker ]; then
+            chmod +x artifacts/tilemap-maker-ubuntu-latest/tilemap-maker
+            tar -czvf release-assets/tilemap-maker-linux.tar.gz -C artifacts/tilemap-maker-ubuntu-latest tilemap-maker
+          fi
+          
+          # macOS
+          if [ -f artifacts/tilemap-maker-macos-latest/tilemap-maker ]; then
+            chmod +x artifacts/tilemap-maker-macos-latest/tilemap-maker
+            zip -j release-assets/tilemap-maker-macos.zip artifacts/tilemap-maker-macos-latest/tilemap-maker
+          fi
+          
+          # Windows
+          if [ -f artifacts/tilemap-maker-windows-latest/tilemap-maker.exe ]; then
+            zip -j release-assets/tilemap-maker-windows.zip artifacts/tilemap-maker-windows-latest/tilemap-maker.exe
+          fi
+
+      - name: Determine tag name
+        id: tag
+        run: |
+          INPUT_TAG="${{ github.event.inputs.tag_name }}"
+          if [ -n "$INPUT_TAG" ]; then
+            echo "tag=$INPUT_TAG" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=v$(date +'%Y.%m.%d-%H%M%S')" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: ${{ github.event.inputs.release_title != '' && github.event.inputs.release_title || steps.tag.outputs.tag }}
+          draft: ${{ github.event.inputs.draft == 'true' }}
+          prerelease: ${{ github.event.inputs.prerelease == 'true' }}
+          files: release-assets/*
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
