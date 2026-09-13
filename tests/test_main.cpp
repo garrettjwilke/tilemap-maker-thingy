@@ -17,6 +17,7 @@
 #include <cmath>
 #include <cstring>
 #include <cstdlib>
+#include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <string>
@@ -33,11 +34,16 @@ void expect(bool cond, const char* msg) {
 }
 
 std::string temp_path(const char* name) {
-    const char* dir = std::getenv("TMPDIR");
-    if (!dir || !*dir) {
-        dir = "/tmp";
+    std::error_code ec;
+    auto p = std::filesystem::temp_directory_path(ec);
+    if (!ec && !p.empty()) {
+        return (p / name).string();
     }
-    return std::string(dir) + "/" + name;
+    const char* dir = std::getenv("TMPDIR");
+    if (!dir || !*dir) dir = std::getenv("TEMP");
+    if (!dir || !*dir) dir = std::getenv("TMP");
+    if (!dir || !*dir) dir = ".";
+    return (std::filesystem::path(dir) / name).string();
 }
 
 bool create_dummy_tileset_png(const std::string& path, int tile_size, int cols = 13, int rows = 4) {
@@ -397,8 +403,10 @@ void test_io_and_settings() {
     expect(loaded.get_cell(3, 4).atlas_x == 2 && loaded.get_cell(3, 4).atlas_y == 1, "loaded cell content");
     expect(loaded.get_cell(0, 0).is_empty(), "loaded empty cell");
     expect(loaded.collision_types.size() == 2, "loaded 2 collision types");
-    expect(loaded.collision_types[1].id == 2, "loaded type 2 id");
-    expect(loaded.collision_types[1].color == Rgb{40, 180, 100}, "loaded type 2 green color");
+    if (loaded.collision_types.size() >= 2) {
+        expect(loaded.collision_types[1].id == 2, "loaded type 2 id");
+        expect(loaded.collision_types[1].color == Rgb{40, 180, 100}, "loaded type 2 green color");
+    }
     expect(loaded.tileset.get_tile_collision(2, 1) == 2, "loaded tile collision for (2, 1) is 2");
 
     std::remove(map_file.c_str());
@@ -544,8 +552,10 @@ void test_terrain_import() {
     expect(ts_terrain.tile_size == 8, ".terrain tile_size should be 8");
     expect(ts_terrain.cols == 13 && ts_terrain.rows == 4, ".terrain dims 13x4");
     expect(ts_terrain.variants.size() == 2, ".terrain variants count 2");
-    expect(ts_terrain.variants[0].x == 12 && ts_terrain.variants[0].root_x == 9, "variant 0 mapping");
-    expect(std::abs(ts_terrain.variants[0].probability - 0.45f) < 0.01f, "variant 0 probability");
+    if (ts_terrain.variants.size() >= 2) {
+        expect(ts_terrain.variants[0].x == 12 && ts_terrain.variants[0].root_x == 9, "variant 0 mapping");
+        expect(std::abs(ts_terrain.variants[0].probability - 0.45f) < 0.01f, "variant 0 probability");
+    }
 
     // 2. Test loading via .json path containing terrain metadata
     Tileset ts_json;
@@ -669,11 +679,13 @@ void test_c_header_variants() {
     Tileset ts;
     expect(ts.import_variants_file(hpath), "import variants from C header file");
     expect(ts.variants.size() == 3, "should parse 3 variants from header");
-    expect(ts.variants[0].x == 12 && ts.variants[0].y == 0 && ts.variants[0].root_x == 9 && ts.variants[0].root_y == 2,
-           "variant 0 mapping");
-    expect(std::abs(ts.variants[0].probability - 0.8f) < 0.01f, "variant 0 weight converted to probability 0.8");
-    expect(std::abs(ts.variants[1].probability - 0.6f) < 0.01f, "variant 1 weight converted to probability 0.6");
-    expect(std::abs(ts.variants[2].probability - 0.4f) < 0.01f, "variant 2 weight converted to probability 0.4");
+    if (ts.variants.size() >= 3) {
+        expect(ts.variants[0].x == 12 && ts.variants[0].y == 0 && ts.variants[0].root_x == 9 && ts.variants[0].root_y == 2,
+               "variant 0 mapping");
+        expect(std::abs(ts.variants[0].probability - 0.8f) < 0.01f, "variant 0 weight converted to probability 0.8");
+        expect(std::abs(ts.variants[1].probability - 0.6f) < 0.01f, "variant 1 weight converted to probability 0.6");
+        expect(std::abs(ts.variants[2].probability - 0.4f) < 0.01f, "variant 2 weight converted to probability 0.4");
+    }
 
     // Test resolve_variant with high roll
     Cell resolved = ts.resolve_variant(9, 2, 0.95f);
