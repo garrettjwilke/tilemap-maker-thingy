@@ -102,6 +102,7 @@ struct EditorState {
     int new_w = 40;
     int new_h = 28;
     int new_tile_size = 16;
+    bool new_empty_tileset = false;
 
     bool show_resize_modal = false;
     int resize_w = 40;
@@ -141,6 +142,8 @@ static void update_tileset_texture(SDL_Renderer* renderer) {
         g_ed.tileset_texture = nullptr;
     }
     if (!g_ed.doc.tileset.is_valid()) {
+        g_ed.texture_w = 0;
+        g_ed.texture_h = 0;
         return;
     }
 
@@ -2595,7 +2598,7 @@ static void draw_sidebar_content(SDL_Renderer* renderer) {
     }
 }
 
-static void draw_modals() {
+static void draw_modals(SDL_Renderer* renderer) {
     if (g_ed.show_resize_modal) {
         ImGui::OpenPopup("Resize Canvas##Modal");
     }
@@ -2678,15 +2681,45 @@ static void draw_modals() {
         ImGui::Text("Size: %dx%d - %dx%d px", eff_w8, eff_h8, eff_w8 * 8, eff_h8 * 8);
 
         ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::Spacing();
+
+        ImGui::Checkbox("Start project with empty tileset/terrain", &g_ed.new_empty_tileset);
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("Clear current tileset and terrain variants, starting fresh in Tileset Maker");
+        }
+
+        ImGui::Spacing();
         if (ImGui::Button("Create", ImVec2(100.0f * g_ed.settings.scale, 0))) {
+            cancel_or_deselect();
+            cancel_paste();
             g_ed.doc.reset_8px(g_ed.new_w, g_ed.new_h, g_ed.new_tile_size);
             g_ed.doc.name = g_ed.new_name;
             g_ed.current_map_path.clear();
+
+            if (g_ed.new_empty_tileset) {
+                g_ed.doc.clear_tileset();
+                update_tileset_texture(renderer);
+                g_ed.tileset_editor.reset_new("tileset", g_ed.new_tile_size);
+                g_ed.selected_terrain_tile = {Tileset::kDefaultCenterCol, Tileset::kDefaultCenterRow};
+                g_ed.hovered_terrain_tile = {-1, -1};
+                g_ed.stamp_col = 9;
+                g_ed.stamp_row = 2;
+                g_ed.tileset_mode = TilesetSidebarMode::Stamp;
+                g_ed.settings.last_tileset_path.clear();
+                persist_settings();
+                g_ed.status_msg = "Created new map with empty tileset/terrain.";
+            } else {
+                g_ed.status_msg = "Created new map.";
+            }
+
+            g_ed.new_empty_tileset = false;
             g_ed.show_new_modal = false;
             ImGui::CloseCurrentPopup();
         }
         ImGui::SameLine();
         if (ImGui::Button("Cancel", ImVec2(100.0f * g_ed.settings.scale, 0))) {
+            g_ed.new_empty_tileset = false;
             g_ed.show_new_modal = false;
             ImGui::CloseCurrentPopup();
         }
@@ -2874,6 +2907,7 @@ int run_editor() {
                     open_map_dialog(renderer);
                 }
                 if (cmd && ImGui::IsKeyPressed(ImGuiKey_N)) {
+                    g_ed.new_empty_tileset = false;
                     g_ed.show_new_modal = true;
                 }
                 if (cmd && ImGui::IsKeyPressed(ImGuiKey_E)) {
@@ -2998,6 +3032,7 @@ int run_editor() {
             if (g_ed.current_view == AppView::Tilemap) {
                 if (ImGui::BeginMenu("File")) {
                     if (ImGui::MenuItem("New Map...", "Ctrl+N")) {
+                        g_ed.new_empty_tileset = false;
                         g_ed.show_new_modal = true;
                     }
                     if (ImGui::MenuItem("Open Map...", "Ctrl+O")) {
@@ -3356,7 +3391,7 @@ int run_editor() {
         ImGui::End(); // MainLayout##Window
 
         if (g_ed.current_view == AppView::Tilemap) {
-            draw_modals();
+            draw_modals(renderer);
         } else {
             g_ed.tileset_editor.draw_modals(running);
         }

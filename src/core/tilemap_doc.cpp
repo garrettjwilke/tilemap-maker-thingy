@@ -47,6 +47,12 @@ void TilemapDoc::reset_8px(int w_8px, int h_8px, int ts) {
     reset(cells_w, cells_h, ts);
 }
 
+void TilemapDoc::clear_tileset() {
+    tileset = Tileset();
+    tileset.tile_size = tile_size;
+    tileset.init_tile_collisions(1);
+}
+
 const MapCell& TilemapDoc::get_cell(int x, int y) const {
     if (!in_bounds(x, y)) return kEmptyCell;
     return cells_[cell_index(x, y)];

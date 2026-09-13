@@ -1653,6 +1653,47 @@ void test_ui_scale_and_sync() {
     std::remove(tmm_file.c_str());
 }
 
+void test_new_map_empty_tileset() {
+    using namespace tmm;
+    const std::string png = temp_path("test_new_map_ts.png");
+    expect(create_dummy_tileset_png(png, 16, 13, 4), "create dummy tileset for new map test");
+
+    TilemapDoc doc(20, 14, 16);
+    expect(doc.tileset.load_from_file(png), "load tileset into doc");
+    doc.tileset.set_variant(12, 0, 9, 2, 0.5f);
+    doc.tileset.terrain_path = "some_path.terrain";
+    expect(doc.tileset.is_valid(), "tileset should be valid");
+    expect(!doc.tileset.variants.empty(), "tileset has variants");
+    expect(!doc.tileset.png_path.empty(), "png path set");
+    expect(!doc.tileset.terrain_path.empty(), "terrain path set");
+
+    // Test that default reset_8px keeps the tileset intact
+    doc.reset_8px(40, 28, 16);
+    expect(doc.tileset.is_valid(), "reset_8px should retain existing tileset");
+    expect(!doc.tileset.variants.empty(), "reset_8px should retain variants");
+
+    // Test clear_tileset resets tileset and terrain completely
+    doc.clear_tileset();
+    expect(!doc.tileset.is_valid(), "clear_tileset should make tileset invalid/empty");
+    expect(doc.tileset.pixels.empty(), "clear_tileset should clear pixels");
+    expect(doc.tileset.palette.empty(), "clear_tileset should clear palette");
+    expect(doc.tileset.variants.empty(), "clear_tileset should clear variants");
+    expect(doc.tileset.png_path.empty(), "clear_tileset should clear png_path");
+    expect(doc.tileset.terrain_path.empty(), "clear_tileset should clear terrain_path");
+    expect(doc.tileset.tile_size == doc.tile_size, "clear_tileset should set tile_size to match doc");
+    expect(doc.tileset.get_tile_collision(10, 1) == 0, "empty tile (10, 1) should have 0 collision");
+    expect(doc.tileset.get_tile_collision(0, 0) == 1, "default tile (0, 0) should have 1 collision");
+
+    // Test embedded TilesetEditor reset_new
+    tsm::TilesetEditor ed;
+    ed.reset_new("tileset", 16);
+    expect(ed.step == tsm::Step::Center, "fresh tileset editor should be at Step::Center");
+    expect(ed.doc.tile_size == 16, "tileset editor should have matching tile size");
+    expect(std::string(ed.project_name) == "tileset", "tileset editor project name should be 'tileset'");
+
+    std::remove(png.c_str());
+}
+
 } // namespace
 
 int main() {
@@ -1678,6 +1719,7 @@ int main() {
     test_viewport_zoom_pan_math();
     test_tileset_maker_integration();
     test_ui_scale_and_sync();
+    test_new_map_empty_tileset();
 
     if (g_fails) {
         std::cerr << g_fails << " test(s) failed\n";

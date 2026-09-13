@@ -62,6 +62,7 @@ public:
 
     void reset(int w = 20, int h = 14, int ts = 16);
     void reset_8px(int w_8px, int h_8px, int ts = 16);
+    void clear_tileset();
 
     // Dimension metrics in cells, 8x8 tile units, and pixel units
     int factor() const { return (tile_size == 8) ? 1 : 2; }
