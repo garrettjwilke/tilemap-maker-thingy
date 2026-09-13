@@ -49,17 +49,25 @@ struct Clipboard {
 class TilemapDoc {
 public:
     std::string name = "untitled";
-    int width = 30;   // In tiles
-    int height = 20;  // In tiles
+    int width = 20;   // In cells (20 cells of 16px = 40 tiles of 8px = 320px)
+    int height = 14;  // In cells (14 cells of 16px = 28 tiles of 8px = 224px)
     int origin_x = 0;
     int origin_y = 0;
     int tile_size = 16;
     Tileset tileset;
     std::vector<CollisionType> collision_types;
 
-    TilemapDoc(int w = 30, int h = 20, int ts = 16);
+    TilemapDoc(int w = 20, int h = 14, int ts = 16);
 
-    void reset(int w = 30, int h = 20, int ts = 16);
+    void reset(int w = 20, int h = 14, int ts = 16);
+    void reset_8px(int w_8px, int h_8px, int ts = 16);
+
+    // Dimension metrics in 8x8 tile units and pixel units
+    int factor() const { return (tile_size == 8) ? 1 : 2; }
+    int width_8px() const { return width * factor(); }
+    int height_8px() const { return height * factor(); }
+    int pixel_width() const { return width * tile_size; }
+    int pixel_height() const { return height * tile_size; }
 
     // Collision type management
     uint8_t add_collision_type();
@@ -109,6 +117,8 @@ public:
     // Resize
     bool would_lose_tiles(int new_w, int new_h, int anchor_x, int anchor_y) const;
     void resize(int new_w, int new_h, int anchor_x, int anchor_y);
+    bool would_lose_tiles_8px(int new_w_8px, int new_h_8px, int anchor_x = -1, int anchor_y = -1) const;
+    void resize_8px(int new_w_8px, int new_h_8px, int anchor_x = -1, int anchor_y = -1);
 
     // Collision generation
     CollisionGrid build_collision_grid() const;

@@ -39,6 +39,13 @@ void TilemapDoc::reset(int w, int h, int ts) {
     collision_types.push_back(CollisionType{1, default_collision_type_name(1), Rgb{235, 60, 50}});
 }
 
+void TilemapDoc::reset_8px(int w_8px, int h_8px, int ts) {
+    const int f = (ts == 8) ? 1 : 2;
+    const int cells_w = std::max(1, (w_8px + f - 1) / f);
+    const int cells_h = std::max(1, (h_8px + f - 1) / f);
+    reset(cells_w, cells_h, ts);
+}
+
 const MapCell& TilemapDoc::get_cell(int x, int y) const {
     if (!in_bounds(x, y)) return kEmptyCell;
     return cells_[static_cast<size_t>(y * width + x)];
@@ -733,6 +740,20 @@ void TilemapDoc::resize(int new_w, int new_h, int anchor_x, int anchor_y) {
     solve_all_autotiles();
     end_stroke();
     mark_dirty();
+}
+
+bool TilemapDoc::would_lose_tiles_8px(int new_w_8px, int new_h_8px, int anchor_x, int anchor_y) const {
+    const int f = factor();
+    const int cells_w = std::max(1, (new_w_8px + f - 1) / f);
+    const int cells_h = std::max(1, (new_h_8px + f - 1) / f);
+    return would_lose_tiles(cells_w, cells_h, anchor_x, anchor_y);
+}
+
+void TilemapDoc::resize_8px(int new_w_8px, int new_h_8px, int anchor_x, int anchor_y) {
+    const int f = factor();
+    const int cells_w = std::max(1, (new_w_8px + f - 1) / f);
+    const int cells_h = std::max(1, (new_h_8px + f - 1) / f);
+    resize(cells_w, cells_h, anchor_x, anchor_y);
 }
 
 uint8_t TilemapDoc::add_collision_type() {

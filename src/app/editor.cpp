@@ -86,13 +86,13 @@ struct EditorState {
     // Modals
     bool show_new_modal = false;
     char new_name[128] = "level_1";
-    int new_w = 30;
-    int new_h = 20;
+    int new_w = 40;
+    int new_h = 28;
     int new_tile_size = 16;
 
     bool show_resize_modal = false;
-    int resize_w = 30;
-    int resize_h = 20;
+    int resize_w = 40;
+    int resize_h = 28;
     int resize_anchor_x = -1; // -1: left, 0: center, 1: right
     int resize_anchor_y = -1; // -1: top, 0: center, 1: bottom
 
@@ -329,7 +329,14 @@ static void open_tileset_dialog(SDL_Renderer* renderer) {
     nfdresult_t res = NFD_OpenDialogU8(&out_path, filters, 4, nullptr);
     if (res == NFD_OKAY && out_path) {
         if (g_ed.doc.tileset.load_from_file(out_path)) {
-            g_ed.doc.tile_size = g_ed.doc.tileset.tile_size;
+            const int old_ts = g_ed.doc.tile_size;
+            const int new_ts = g_ed.doc.tileset.tile_size;
+            if (old_ts != new_ts) {
+                const int w8 = g_ed.doc.width_8px();
+                const int h8 = g_ed.doc.height_8px();
+                g_ed.doc.tile_size = new_ts;
+                g_ed.doc.resize_8px(w8, h8);
+            }
             g_ed.doc.solve_all_autotiles();
             update_tileset_texture(renderer);
             if (!g_ed.doc.tileset.variants.empty()) {
@@ -362,7 +369,14 @@ static void open_terrain_dialog(SDL_Renderer* renderer) {
         } else {
             ok = g_ed.doc.tileset.load_from_file(out_path);
             if (ok) {
-                g_ed.doc.tile_size = g_ed.doc.tileset.tile_size;
+                const int old_ts = g_ed.doc.tile_size;
+                const int new_ts = g_ed.doc.tileset.tile_size;
+                if (old_ts != new_ts) {
+                    const int w8 = g_ed.doc.width_8px();
+                    const int h8 = g_ed.doc.height_8px();
+                    g_ed.doc.tile_size = new_ts;
+                    g_ed.doc.resize_8px(w8, h8);
+                }
                 update_tileset_texture(renderer);
             }
         }
@@ -2206,12 +2220,13 @@ static void draw_sidebar_content(SDL_Renderer* renderer) {
         g_ed.doc.name = name_buf;
         g_ed.doc.mark_dirty();
     }
-    ImGui::Text("Size: %d × %d tiles (%d × %d px)", g_ed.doc.width, g_ed.doc.height,
-                g_ed.doc.width * g_ed.doc.tile_size, g_ed.doc.height * g_ed.doc.tile_size);
+    ImGui::Text("Size: %dx%d - %dx%d px",
+                g_ed.doc.width_8px(), g_ed.doc.height_8px(),
+                g_ed.doc.pixel_width(), g_ed.doc.pixel_height());
 
     if (ImGui::Button("Resize Canvas…", ImVec2(-1, 26))) {
-        g_ed.resize_w = g_ed.doc.width;
-        g_ed.resize_h = g_ed.doc.height;
+        g_ed.resize_w = g_ed.doc.width_8px();
+        g_ed.resize_h = g_ed.doc.height_8px();
         g_ed.show_resize_modal = true;
     }
     if (ImGui::Button("Clear Map", ImVec2(-1, 26))) {
@@ -2271,11 +2286,20 @@ static void draw_modals() {
         ImGui::OpenPopup("Resize Canvas##Modal");
     }
     if (ImGui::BeginPopupModal("Resize Canvas##Modal", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
-        ImGui::Text("Enter new map size in tiles:");
-        ImGui::InputInt("Width", &g_ed.resize_w);
-        ImGui::InputInt("Height", &g_ed.resize_h);
-        g_ed.resize_w = clampi(g_ed.resize_w, 1, 2048);
-        g_ed.resize_h = clampi(g_ed.resize_h, 1, 2048);
+        ImGui::Text("Enter new map size in 8x8 tiles:");
+        const int f = g_ed.doc.factor();
+        ImGui::InputInt("Width", &g_ed.resize_w, f);
+        ImGui::InputInt("Height", &g_ed.resize_h, f);
+        g_ed.resize_w = clampi(g_ed.resize_w, f, 4096);
+        g_ed.resize_h = clampi(g_ed.resize_h, f, 4096);
+
+        const int eff_w8 = ((g_ed.resize_w + f - 1) / f) * f;
+        const int eff_h8 = ((g_ed.resize_h + f - 1) / f) * f;
+        ImGui::Text("Current: %dx%d - %dx%d px",
+                    g_ed.doc.width_8px(), g_ed.doc.height_8px(),
+                    g_ed.doc.pixel_width(), g_ed.doc.pixel_height());
+        ImGui::Text("New:     %dx%d - %dx%d px",
+                    eff_w8, eff_h8, eff_w8 * 8, eff_h8 * 8);
 
         ImGui::Separator();
         ImGui::Text("Anchor position:");
@@ -2299,14 +2323,14 @@ static void draw_modals() {
             }
         }
 
-        const bool losing = g_ed.doc.would_lose_tiles(g_ed.resize_w, g_ed.resize_h, g_ed.resize_anchor_x, g_ed.resize_anchor_y);
+        const bool losing = g_ed.doc.would_lose_tiles_8px(g_ed.resize_w, g_ed.resize_h, g_ed.resize_anchor_x, g_ed.resize_anchor_y);
         if (losing) {
             ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "Warning: Shrinking will cut off placed tiles!");
         }
 
         ImGui::Spacing();
         if (ImGui::Button("Apply", ImVec2(100, 28))) {
-            g_ed.doc.resize(g_ed.resize_w, g_ed.resize_h, g_ed.resize_anchor_x, g_ed.resize_anchor_y);
+            g_ed.doc.resize_8px(g_ed.resize_w, g_ed.resize_h, g_ed.resize_anchor_x, g_ed.resize_anchor_y);
             g_ed.show_resize_modal = false;
             ImGui::CloseCurrentPopup();
         }
@@ -2323,19 +2347,25 @@ static void draw_modals() {
     }
     if (ImGui::BeginPopupModal("New Map##Modal", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
         ImGui::InputText("Map Name", g_ed.new_name, sizeof(g_ed.new_name));
-        ImGui::InputInt("Width", &g_ed.new_w);
-        ImGui::InputInt("Height", &g_ed.new_h);
-        g_ed.new_w = clampi(g_ed.new_w, 1, 2048);
-        g_ed.new_h = clampi(g_ed.new_h, 1, 2048);
+        const int f = (g_ed.new_tile_size == 16) ? 2 : 1;
+        ImGui::InputInt("Width (8x8 tiles)", &g_ed.new_w, f);
+        ImGui::InputInt("Height (8x8 tiles)", &g_ed.new_h, f);
+        g_ed.new_w = clampi(g_ed.new_w, f, 4096);
+        g_ed.new_h = clampi(g_ed.new_h, f, 4096);
 
         ImGui::Text("Tile Size:");
         ImGui::RadioButton("8x8", &g_ed.new_tile_size, 8);
         ImGui::SameLine();
         ImGui::RadioButton("16x16", &g_ed.new_tile_size, 16);
 
+        const int eff_w8 = ((g_ed.new_w + f - 1) / f) * f;
+        const int eff_h8 = ((g_ed.new_h + f - 1) / f) * f;
+        ImGui::Spacing();
+        ImGui::Text("Size: %dx%d - %dx%d px", eff_w8, eff_h8, eff_w8 * 8, eff_h8 * 8);
+
         ImGui::Spacing();
         if (ImGui::Button("Create", ImVec2(100, 28))) {
-            g_ed.doc.reset(g_ed.new_w, g_ed.new_h, g_ed.new_tile_size);
+            g_ed.doc.reset_8px(g_ed.new_w, g_ed.new_h, g_ed.new_tile_size);
             g_ed.doc.name = g_ed.new_name;
             g_ed.current_map_path.clear();
             g_ed.show_new_modal = false;
@@ -2401,7 +2431,13 @@ int run_editor() {
 
     if (!g_ed.settings.last_tileset_path.empty()) {
         if (g_ed.doc.tileset.load_from_file(g_ed.settings.last_tileset_path)) {
-            g_ed.doc.tile_size = g_ed.doc.tileset.tile_size;
+            const int old_ts = g_ed.doc.tile_size;
+            const int new_ts = g_ed.doc.tileset.tile_size;
+            if (old_ts != new_ts) {
+                const int w8 = g_ed.doc.width_8px();
+                const int h8 = g_ed.doc.height_8px();
+                g_ed.doc.reset_8px(w8, h8, new_ts);
+            }
             update_tileset_texture(renderer);
         }
     }
@@ -2648,8 +2684,8 @@ int run_editor() {
                 }
                 ImGui::Separator();
                 if (ImGui::MenuItem("Resize Canvas…")) {
-                    g_ed.resize_w = g_ed.doc.width;
-                    g_ed.resize_h = g_ed.doc.height;
+                    g_ed.resize_w = g_ed.doc.width_8px();
+                    g_ed.resize_h = g_ed.doc.height_8px();
                     g_ed.show_resize_modal = true;
                 }
                 ImGui::EndMenu();
@@ -2771,10 +2807,13 @@ int run_editor() {
                 ImGui::Text("Collision Mode | Active: %s | %d Types", act_name.c_str(), static_cast<int>(g_ed.doc.collision_types.size()));
             }
         } else if (g_ed.hovered_cell.x >= 0 && g_ed.hovered_cell.y >= 0) {
-            ImGui::Text("Cell: (%d, %d) | Map: %d×%d (%dpx)", g_ed.hovered_cell.x, g_ed.hovered_cell.y,
-                        g_ed.doc.width, g_ed.doc.height, g_ed.doc.tile_size);
+            ImGui::Text("Cell: (%d, %d) | Map: %dx%d - %dx%d px", g_ed.hovered_cell.x, g_ed.hovered_cell.y,
+                        g_ed.doc.width_8px(), g_ed.doc.height_8px(),
+                        g_ed.doc.pixel_width(), g_ed.doc.pixel_height());
         } else {
-            ImGui::Text("Map: %d×%d (%dpx tiles)", g_ed.doc.width, g_ed.doc.height, g_ed.doc.tile_size);
+            ImGui::Text("Map: %dx%d - %dx%d px",
+                        g_ed.doc.width_8px(), g_ed.doc.height_8px(),
+                        g_ed.doc.pixel_width(), g_ed.doc.pixel_height());
         }
 
         ImGui::End(); // MainLayout##Window

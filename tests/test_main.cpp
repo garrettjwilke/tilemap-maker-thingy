@@ -980,6 +980,78 @@ void test_circle_mode_and_clipping() {
     expect(square_clamped.right() <= 20 && square_clamped.bottom() <= 20, "shift drag stays within bounds");
 }
 
+void test_default_size_and_8px_dimensions() {
+    using namespace tmm;
+
+    // 1. Default TilemapDoc constructor
+    TilemapDoc def_doc;
+    expect(def_doc.width_8px() == 40, "default doc width in 8x8 tiles should be 40");
+    expect(def_doc.height_8px() == 28, "default doc height in 8x8 tiles should be 28");
+    expect(def_doc.pixel_width() == 320, "default doc pixel width should be 320");
+    expect(def_doc.pixel_height() == 224, "default doc pixel height should be 224");
+
+    // 2. Creating a 40x28 map with 8x8 tile size
+    TilemapDoc doc8;
+    doc8.reset_8px(40, 28, 8);
+    expect(doc8.width == 40 && doc8.height == 28, "doc8 grid cells should be 40x28");
+    expect(doc8.width_8px() == 40 && doc8.height_8px() == 28, "doc8 width/height in 8px should be 40x28");
+    expect(doc8.pixel_width() == 320 && doc8.pixel_height() == 224, "doc8 pixel resolution should be 320x224");
+
+    // 3. Creating a 40x28 map with 16x16 tile size
+    TilemapDoc doc16;
+    doc16.reset_8px(40, 28, 16);
+    expect(doc16.width == 20 && doc16.height == 14, "doc16 grid cells should be 20x14 for 16x16 tiles");
+    expect(doc16.width_8px() == 40 && doc16.height_8px() == 28, "doc16 width/height in 8px should be 40x28");
+    expect(doc16.pixel_width() == 320 && doc16.pixel_height() == 224, "doc16 pixel resolution should be 320x224");
+
+    // 4. Verify collision grid is 40x28 in both cases
+    CollisionGrid col8 = doc8.build_collision_grid();
+    expect(col8.width == 40 && col8.height == 28, "col8 dimensions should be 40x28");
+
+    CollisionGrid col16 = doc16.build_collision_grid();
+    expect(col16.width == 40 && col16.height == 28, "col16 dimensions should be 40x28");
+
+    // 5. Verify composite PNG export creates 320x224 image in both cases
+    const std::string ts8_path = temp_path("test_dim_ts8.png");
+    const std::string ts16_path = temp_path("test_dim_ts16.png");
+    expect(create_dummy_tileset_png(ts8_path, 8), "create dummy ts8");
+    expect(create_dummy_tileset_png(ts16_path, 16), "create dummy ts16");
+
+    Tileset ts8;
+    expect(ts8.load_from_file(ts8_path), "load ts8");
+    doc8.tileset = ts8;
+
+    Tileset ts16;
+    expect(ts16.load_from_file(ts16_path), "load ts16");
+    doc16.tileset = ts16;
+
+    const std::string out_png8 = temp_path("test_dim_out8.png");
+    expect(export_composite_png(doc8, out_png8).empty(), "export composite png 8px map");
+
+    Image out_im8{};
+    expect(load_png(out_png8.c_str(), &out_im8), "load exported 8px composite PNG");
+    expect(out_im8.w == 320 && out_im8.h == 224, "8px map exported image resolution should be 320x224");
+    image_free(&out_im8);
+    std::remove(out_png8.c_str());
+    std::remove(ts8_path.c_str());
+
+    const std::string out_png16 = temp_path("test_dim_out16.png");
+    expect(export_composite_png(doc16, out_png16).empty(), "export composite png 16px map");
+
+    Image out_im16{};
+    expect(load_png(out_png16.c_str(), &out_im16), "load exported 16px composite PNG");
+    expect(out_im16.w == 320 && out_im16.h == 224, "16px map exported image resolution should be 320x224");
+    image_free(&out_im16);
+    std::remove(out_png16.c_str());
+    std::remove(ts16_path.c_str());
+
+    // 6. Test resizing in 8x8 tile units
+    doc16.resize_8px(80, 56);
+    expect(doc16.width == 40 && doc16.height == 28, "resizing 16px doc to 80x56 (8px) yields 40x28 grid");
+    expect(doc16.width_8px() == 80 && doc16.height_8px() == 56, "doc16 width/height in 8px should be 80x56");
+    expect(doc16.pixel_width() == 640 && doc16.pixel_height() == 448, "doc16 pixel resolution should be 640x448");
+}
+
 } // namespace
 
 int main() {
@@ -997,6 +1069,7 @@ int main() {
     test_selection_and_clipping();
     test_brush_size_and_tools();
     test_circle_mode_and_clipping();
+    test_default_size_and_8px_dimensions();
 
     if (g_fails) {
         std::cerr << g_fails << " test(s) failed\n";
