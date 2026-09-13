@@ -118,7 +118,7 @@ bool parse_settings_text(Settings& s, const std::string& text) {
         std::string val = trim(line.substr(eq + 1));
 
         if (key == "theme") s.dark = (val != "light" && val != "false" && val != "0");
-        else if (key == "scale") s.scale = std::clamp(std::strtof(val.c_str(), nullptr), 0.5f, 3.0f);
+        else if (key == "scale") s.scale = std::clamp(std::strtof(val.c_str(), nullptr), 0.75f, 2.0f);
         else if (key == "sidebar_w") s.sidebar_w = std::clamp(std::strtof(val.c_str(), nullptr), 200.0f, 2000.0f);
         else if (key == "grid_lines") s.grid_lines = (val == "true" || val == "1");
         else if (key == "collision_overlay") s.collision_overlay = (val == "true" || val == "1");

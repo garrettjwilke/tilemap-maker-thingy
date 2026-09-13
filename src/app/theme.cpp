@@ -70,9 +70,8 @@ void apply_theme(bool dark, float scale) {
         s.Colors[ImGuiCol_SliderGrab] = ImVec4(0.22f, 0.45f, 0.78f, 1.0f);
         s.Colors[ImGuiCol_SliderGrabActive] = ImVec4(0.14f, 0.34f, 0.66f, 1.0f);
     }
-    if (scale != 1.0f) {
-        s.ScaleAllSizes(scale);
-    }
+    s.ScaleAllSizes(scale);
+    s.FontScaleMain = scale;
 }
 
 Rgb background_clear_color(bool dark) {

@@ -9,6 +9,7 @@
 #include "core/types.h"
 
 #include "../deps/tileset-maker-thingy/src/app/tileset_editor.h"
+#include "../deps/tileset-maker-thingy/src/app/settings.h"
 #include "../deps/tileset-maker-thingy/src/core/convert.h"
 #include "../deps/tileset-maker-thingy/src/core/io.h"
 
@@ -316,14 +317,33 @@ static void switch_to_view(AppView target, SDL_Renderer* renderer) {
         } else {
             g_ed.status_msg = "Returned to Tilemap Maker.";
         }
+        g_ed.settings.scale = g_ed.tileset_editor.settings.scale;
+        g_ed.settings.dark = g_ed.tileset_editor.settings.dark;
         g_ed.current_view = AppView::Tilemap;
     }
 }
+
+static float s_applied_scale = -1.0f;
+static int s_applied_dark = -1;
+
+static void persist_settings(SDL_Window* window = nullptr);
 
 static void apply_app_theme(bool dark) {
     tmm::apply_theme(dark, g_ed.settings.scale);
     g_ed.tileset_editor.settings.dark = dark;
     g_ed.tileset_editor.settings.scale = g_ed.settings.scale;
+    s_applied_scale = g_ed.settings.scale;
+    s_applied_dark = dark ? 1 : 0;
+}
+
+static void set_ui_scale(float scale) {
+    scale = std::clamp(scale, 0.75f, 2.0f);
+    if (std::abs(g_ed.settings.scale - scale) > 0.0001f) {
+        g_ed.settings.scale = scale;
+        g_ed.tileset_editor.settings.scale = scale;
+        apply_app_theme(g_ed.settings.dark);
+        persist_settings();
+    }
 }
 
 static SDL_Window* s_window = nullptr;
@@ -351,7 +371,7 @@ static bool window_rect_visible(int x, int y, int w, int h) {
     return ok;
 }
 
-static void persist_settings(SDL_Window* window = nullptr) {
+static void persist_settings(SDL_Window* window) {
     SDL_Window* target_win = window ? window : s_window;
     if (target_win) {
         const SDL_WindowFlags flags = SDL_GetWindowFlags(target_win);
@@ -376,6 +396,14 @@ static void persist_settings(SDL_Window* window = nullptr) {
     }
     ensure_config_dir();
     save_settings_file(g_ed.settings, settings_path());
+
+    // Also keep tileset maker standalone config synchronized with current scale and theme
+    tsm::Settings tsm_s;
+    tsm::load_settings_file(tsm_s, tsm::settings_path());
+    tsm_s.scale = g_ed.settings.scale;
+    tsm_s.dark = g_ed.settings.dark;
+    tsm::ensure_config_dir();
+    tsm::save_settings_file(tsm_s, tsm::settings_path());
 }
 
 static void open_tileset_dialog(SDL_Renderer* renderer) {
@@ -827,11 +855,12 @@ static void draw_top_nav_and_view_row(SDL_Renderer* renderer) {
     // View Switcher Buttons
     const bool is_map = (g_ed.current_view == AppView::Tilemap);
     const bool is_ts = (g_ed.current_view == AppView::TilesetMaker);
+    const float sc = g_ed.settings.scale;
 
     if (is_map) {
         ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.20f, 0.50f, 0.88f, 1.0f));
     }
-    if (ImGui::Button("Map Editor", ImVec2(100, 24))) {
+    if (ImGui::Button("Map Editor", ImVec2(100.0f * sc, 0))) {
         if (!is_map) switch_to_view(AppView::Tilemap, renderer);
     }
     if (is_map) ImGui::PopStyleColor();
@@ -841,7 +870,7 @@ static void draw_top_nav_and_view_row(SDL_Renderer* renderer) {
     if (is_ts) {
         ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.20f, 0.50f, 0.88f, 1.0f));
     }
-    if (ImGui::Button("Tileset Maker", ImVec2(105, 24))) {
+    if (ImGui::Button("Tileset Maker", ImVec2(105.0f * sc, 0))) {
         if (!is_ts) switch_to_view(AppView::TilesetMaker, renderer);
     }
     if (is_ts) ImGui::PopStyleColor();
@@ -883,8 +912,8 @@ static void draw_top_nav_and_view_row(SDL_Renderer* renderer) {
         ImGui::TextColored(ImVec4(0.4f, 0.75f, 1.0f, 1.0f), "TILESET MAKER MODE");
         ImGui::SameLine(0, 16);
         ImGui::TextDisabled("Create autotile terrains and pixel art for your maps");
-        ImGui::SameLine(ImGui::GetWindowWidth() - 210);
-        if (ImGui::Button("Apply & Return to Map", ImVec2(190, 24))) {
+        ImGui::SameLine(ImGui::GetWindowWidth() - 210.0f * sc);
+        if (ImGui::Button("Apply & Return to Map", ImVec2(190.0f * sc, 0))) {
             switch_to_view(AppView::Tilemap, renderer);
         }
     }
@@ -938,7 +967,7 @@ static void draw_tool_options_row() {
             ScopedStyleColor bcol(ImGuiCol_Button, ImVec4(0.24f, 0.48f, 0.80f, 1.0f), g_ed.brush_size == s);
             char btn_lbl[32];
             std::snprintf(btn_lbl, sizeof(btn_lbl), "%d##%sSz%d%s", s, label_prefix, s, id_suffix);
-            if (ImGui::Button(btn_lbl, ImVec2(24, 0))) {
+            if (ImGui::Button(btn_lbl, ImVec2(24.0f * g_ed.settings.scale, 0))) {
                 g_ed.brush_size = s;
                 persist_settings();
             }
@@ -1846,15 +1875,15 @@ static void draw_sidebar_content(SDL_Renderer* renderer) {
 
     // 1. Tileset Section
     ImGui::TextColored(sec_hdr_col, "TILESET");
-    if (ImGui::Button("Import Tileset...", ImVec2(-1, 28))) {
+    if (ImGui::Button("Import Tileset...", ImVec2(-1, 0))) {
         open_tileset_dialog(renderer);
     }
     if (!g_ed.doc.tileset.is_valid()) {
-        if (ImGui::Button("Create in Tileset Maker...", ImVec2(-1, 26))) {
+        if (ImGui::Button("Create in Tileset Maker...", ImVec2(-1, 0))) {
             switch_to_view(AppView::TilesetMaker, renderer);
         }
     } else {
-        if (ImGui::Button("Edit in Tileset Maker...", ImVec2(-1, 26))) {
+        if (ImGui::Button("Edit in Tileset Maker...", ImVec2(-1, 0))) {
             switch_to_view(AppView::TilesetMaker, renderer);
         }
     }
@@ -1881,7 +1910,7 @@ static void draw_sidebar_content(SDL_Renderer* renderer) {
             const float btn_w = std::floor((avail_w - 8.0f) / 3.0f);
             {
                 ScopedStyleColor active_col(ImGuiCol_Button, ImVec4(0.20f, 0.52f, 0.88f, 1.0f), g_ed.tileset_mode == TilesetSidebarMode::Stamp);
-                if (ImGui::Button("Stamp", ImVec2(btn_w, 26))) {
+                if (ImGui::Button("Stamp", ImVec2(btn_w, 0))) {
                     g_ed.tileset_mode = TilesetSidebarMode::Stamp;
                 }
             }
@@ -1891,7 +1920,7 @@ static void draw_sidebar_content(SDL_Renderer* renderer) {
             ImGui::SameLine(0, 4);
             {
                 ScopedStyleColor active_col(ImGuiCol_Button, ImVec4(0.20f, 0.52f, 0.88f, 1.0f), g_ed.tileset_mode == TilesetSidebarMode::Collision);
-                if (ImGui::Button("Collision", ImVec2(btn_w, 26))) {
+                if (ImGui::Button("Collision", ImVec2(btn_w, 0))) {
                     g_ed.tileset_mode = TilesetSidebarMode::Collision;
                 }
             }
@@ -1901,7 +1930,7 @@ static void draw_sidebar_content(SDL_Renderer* renderer) {
             ImGui::SameLine(0, 4);
             {
                 ScopedStyleColor active_col(ImGuiCol_Button, ImVec4(0.20f, 0.52f, 0.88f, 1.0f), g_ed.tileset_mode == TilesetSidebarMode::Variants);
-                if (ImGui::Button("Variants", ImVec2(btn_w, 26))) {
+                if (ImGui::Button("Variants", ImVec2(btn_w, 0))) {
                     g_ed.tileset_mode = TilesetSidebarMode::Variants;
                 }
             }
@@ -1923,8 +1952,8 @@ static void draw_sidebar_content(SDL_Renderer* renderer) {
             const float total_gaps_x = (cols > 1) ? static_cast<float>(cols - 1) * spacing : 0.0f;
             const float total_gaps_y = (rows > 1) ? static_cast<float>(rows - 1) * spacing : 0.0f;
             const float outer_w = ImGui::GetContentRegionAvail().x;
-            const float extra_controls_h = (g_ed.tileset_mode == TilesetSidebarMode::Stamp) ? 70.0f : 270.0f;
-            const float avail_sidebar_h = std::max(100.0f, ImGui::GetContentRegionAvail().y - extra_controls_h);
+            const float extra_controls_h = (g_ed.tileset_mode == TilesetSidebarMode::Stamp) ? (70.0f * g_ed.settings.scale) : (270.0f * g_ed.settings.scale);
+            const float avail_sidebar_h = std::max(100.0f * g_ed.settings.scale, ImGui::GetContentRegionAvail().y - extra_controls_h);
             const TilesetPreviewLayout layout = compute_tileset_preview_layout(
                 outer_w, avail_sidebar_h, cols, rows, spacing,
                 child_pad.x, child_pad.y, border_size, style.ScrollbarSize);
@@ -2351,7 +2380,7 @@ static void draw_sidebar_content(SDL_Renderer* renderer) {
             // Batch tools
             ImGui::Spacing();
             const float half_btn_w = (ImGui::GetContentRegionAvail().x - 4.0f) * 0.5f;
-            if (ImGui::Button("Fill All Tiles", ImVec2(half_btn_w, 24))) {
+            if (ImGui::Button("Fill All Tiles", ImVec2(half_btn_w, 0))) {
                 for (int r = 0; r < g_ed.doc.tileset.rows; ++r) {
                     for (int c = 0; c < g_ed.doc.tileset.cols; ++c) {
                         g_ed.doc.tileset.set_tile_collision(c, r, g_ed.active_collision_type);
@@ -2365,7 +2394,7 @@ static void draw_sidebar_content(SDL_Renderer* renderer) {
             }
 
             ImGui::SameLine(0, 4);
-            if (ImGui::Button("Clear All Tiles", ImVec2(half_btn_w, 24))) {
+            if (ImGui::Button("Clear All Tiles", ImVec2(half_btn_w, 0))) {
                 for (int r = 0; r < g_ed.doc.tileset.rows; ++r) {
                     for (int c = 0; c < g_ed.doc.tileset.cols; ++c) {
                         g_ed.doc.tileset.set_tile_collision(c, r, 0);
@@ -2382,7 +2411,7 @@ static void draw_sidebar_content(SDL_Renderer* renderer) {
             ImGui::Separator();
             ImGui::TextColored(sec_hdr_col, "VARIANTS & TERRAIN MAPPING");
 
-            if (ImGui::Button("Save .terrain File", ImVec2(-1, 26))) {
+            if (ImGui::Button("Save .terrain File", ImVec2(-1, 0))) {
                 std::string save_p = g_ed.doc.tileset.default_terrain_path();
                 std::string err = save_terrain_file(g_ed.doc.tileset, save_p);
                 if (err.empty()) {
@@ -2410,7 +2439,7 @@ static void draw_sidebar_content(SDL_Renderer* renderer) {
                         g_ed.terrain_variant_prob = std::clamp(static_cast<float>(def_pct) / 100.0f, 0.05f, 1.0f);
                     }
 
-                    if (ImGui::Button("Auto-bind Extra Cols (12+)##Origin", ImVec2(-1, 24))) {
+                    if (ImGui::Button("Auto-bind Extra Cols (12+)##Origin", ImVec2(-1, 0))) {
                         g_ed.doc.tileset.auto_bind_extra_columns(sx, sy, g_ed.terrain_variant_prob);
                         g_ed.doc.mark_dirty();
                         g_ed.doc.solve_all_autotiles();
@@ -2421,7 +2450,7 @@ static void draw_sidebar_content(SDL_Renderer* renderer) {
                     }
 
                     if (root_vars > 0) {
-                        if (ImGui::Button("Disconnect All Variants##Origin", ImVec2(-1, 24))) {
+                        if (ImGui::Button("Disconnect All Variants##Origin", ImVec2(-1, 0))) {
                             g_ed.doc.tileset.remove_variants_for_root(sx, sy);
                             g_ed.doc.mark_dirty();
                             g_ed.doc.solve_all_autotiles();
@@ -2446,7 +2475,7 @@ static void draw_sidebar_content(SDL_Renderer* renderer) {
                             ImGui::SetTooltip("Spawn probability for this variant relative to its origin");
                         }
 
-                        if (ImGui::Button("Disconnect Variant##Var", ImVec2(-1, 24))) {
+                        if (ImGui::Button("Disconnect Variant##Var", ImVec2(-1, 0))) {
                             g_ed.doc.tileset.remove_variant(sx, sy);
                             g_ed.doc.mark_dirty();
                             g_ed.doc.solve_all_autotiles();
@@ -2466,7 +2495,7 @@ static void draw_sidebar_content(SDL_Renderer* renderer) {
             // Active Variants List
             ImGui::Spacing();
             ImGui::Text("Active Variants (%zu):", g_ed.doc.tileset.variants.size());
-            ImGui::BeginChild("VariantListChild##Sidebar", ImVec2(0, 140), ImGuiChildFlags_Borders);
+            ImGui::BeginChild("VariantListChild##Sidebar", ImVec2(0, 140.0f * g_ed.settings.scale), ImGuiChildFlags_Borders);
             if (g_ed.doc.tileset.variants.empty()) {
                 ImGui::TextDisabled("No variants configured.");
             } else {
@@ -2510,12 +2539,12 @@ static void draw_sidebar_content(SDL_Renderer* renderer) {
                 g_ed.doc.width_8px(), g_ed.doc.height_8px(),
                 g_ed.doc.pixel_width(), g_ed.doc.pixel_height());
 
-    if (ImGui::Button("Resize Canvas...", ImVec2(-1, 26))) {
+    if (ImGui::Button("Resize Canvas...", ImVec2(-1, 0))) {
         g_ed.resize_w = g_ed.doc.width_8px();
         g_ed.resize_h = g_ed.doc.height_8px();
         g_ed.show_resize_modal = true;
     }
-    if (ImGui::Button("Clear Map", ImVec2(-1, 26))) {
+    if (ImGui::Button("Clear Map", ImVec2(-1, 0))) {
         g_ed.doc.clear_cells();
         g_ed.status_msg = "Cleared map.";
     }
@@ -2523,7 +2552,7 @@ static void draw_sidebar_content(SDL_Renderer* renderer) {
     ImGui::Separator();
     // 3. Export Section
     ImGui::TextColored(sec_hdr_col, "EXPORT");
-    if (ImGui::Button("Export Destination...", ImVec2(-1, 26))) {
+    if (ImGui::Button("Export Destination...", ImVec2(-1, 0))) {
         nfdu8char_t* out_dir = nullptr;
         const char* def_dir = (std::strlen(g_ed.export_folder) > 0)
             ? g_ed.export_folder
@@ -2560,7 +2589,7 @@ static void draw_sidebar_content(SDL_Renderer* renderer) {
     ImGui::Spacing();
     {
         ScopedStyleColor col(ImGuiCol_Button, ImVec4(0.2f, 0.58f, 0.35f, 1.0f));
-        if (ImGui::Button("EXPORT", ImVec2(-1, 36))) {
+        if (ImGui::Button("EXPORT", ImVec2(-1, 36.0f * g_ed.settings.scale))) {
             execute_export();
         }
     }
@@ -2601,7 +2630,7 @@ static void draw_modals() {
                                      g_ed.resize_anchor_x == x && g_ed.resize_anchor_y == y);
                 char bid[16];
                 std::snprintf(bid, sizeof(bid), "%s##anch_%d_%d", anchors[y + 1][x + 1], x, y);
-                if (ImGui::Button(bid, ImVec2(36, 28))) {
+                if (ImGui::Button(bid, ImVec2(36.0f * g_ed.settings.scale, 0))) {
                     g_ed.resize_anchor_x = x;
                     g_ed.resize_anchor_y = y;
                 }
@@ -2614,13 +2643,13 @@ static void draw_modals() {
         }
 
         ImGui::Spacing();
-        if (ImGui::Button("Apply", ImVec2(100, 28))) {
+        if (ImGui::Button("Apply", ImVec2(100.0f * g_ed.settings.scale, 0))) {
             g_ed.doc.resize_8px(g_ed.resize_w, g_ed.resize_h, g_ed.resize_anchor_x, g_ed.resize_anchor_y);
             g_ed.show_resize_modal = false;
             ImGui::CloseCurrentPopup();
         }
         ImGui::SameLine();
-        if (ImGui::Button("Cancel", ImVec2(100, 28))) {
+        if (ImGui::Button("Cancel", ImVec2(100.0f * g_ed.settings.scale, 0))) {
             g_ed.show_resize_modal = false;
             ImGui::CloseCurrentPopup();
         }
@@ -2649,7 +2678,7 @@ static void draw_modals() {
         ImGui::Text("Size: %dx%d - %dx%d px", eff_w8, eff_h8, eff_w8 * 8, eff_h8 * 8);
 
         ImGui::Spacing();
-        if (ImGui::Button("Create", ImVec2(100, 28))) {
+        if (ImGui::Button("Create", ImVec2(100.0f * g_ed.settings.scale, 0))) {
             g_ed.doc.reset_8px(g_ed.new_w, g_ed.new_h, g_ed.new_tile_size);
             g_ed.doc.name = g_ed.new_name;
             g_ed.current_map_path.clear();
@@ -2657,7 +2686,7 @@ static void draw_modals() {
             ImGui::CloseCurrentPopup();
         }
         ImGui::SameLine();
-        if (ImGui::Button("Cancel", ImVec2(100, 28))) {
+        if (ImGui::Button("Cancel", ImVec2(100.0f * g_ed.settings.scale, 0))) {
             g_ed.show_new_modal = false;
             ImGui::CloseCurrentPopup();
         }
@@ -2673,7 +2702,15 @@ int run_editor() {
 
     NFD_Init();
     ensure_config_dir();
-    load_settings_file(g_ed.settings, settings_path());
+    const bool tmm_loaded = load_settings_file(g_ed.settings, settings_path());
+    if (!tmm_loaded || std::abs(g_ed.settings.scale - 1.0f) < 0.001f) {
+        tsm::Settings tsm_s;
+        if (tsm::load_settings_file(tsm_s, tsm::settings_path())) {
+            if (tsm_s.scale >= 0.75f && tsm_s.scale <= 2.0f && std::abs(tsm_s.scale - 1.0f) > 0.001f) {
+                g_ed.settings.scale = tsm_s.scale;
+            }
+        }
+    }
 
     if (!g_ed.settings.last_export_dir.empty()) {
         std::snprintf(g_ed.export_folder, sizeof(g_ed.export_folder), "%s", g_ed.settings.last_export_dir.c_str());
@@ -2777,6 +2814,10 @@ int run_editor() {
         }
         if (!(win_flags & (SDL_WINDOW_INPUT_FOCUS | SDL_WINDOW_MOUSE_FOCUS))) {
             SDL_Delay(32);
+        }
+
+        if (std::abs(g_ed.settings.scale - s_applied_scale) > 0.0001f || (g_ed.settings.dark ? 1 : 0) != s_applied_dark) {
+            apply_app_theme(g_ed.settings.dark);
         }
 
         ImGui_ImplSDLRenderer3_NewFrame();
@@ -3041,6 +3082,13 @@ int run_editor() {
                         persist_settings();
                     }
                     ImGui::Separator();
+                    ImGui::TextUnformatted("UI scale");
+                    float percent = g_ed.settings.scale * 100.0f;
+                    ImGui::SetNextItemWidth(220.0f * g_ed.settings.scale);
+                    if (ImGui::SliderFloat("##view_scale_tmm", &percent, 75.0f, 200.0f, "%.0f%%")) {
+                        set_ui_scale(percent / 100.0f);
+                    }
+                    ImGui::Separator();
                     if (ImGui::MenuItem("Reset Zoom", "100%")) {
                         g_ed.zoom = 1.0f;
                         persist_settings();
@@ -3048,6 +3096,36 @@ int run_editor() {
                     if (ImGui::MenuItem("Fit Map in View")) {
                         g_ed.zoom = 2.0f;
                         g_ed.pan = ImVec2(60, 40);
+                        persist_settings();
+                    }
+                    ImGui::EndMenu();
+                }
+                if (ImGui::BeginMenu("Settings")) {
+                    ImGui::TextUnformatted("Theme");
+                    if (ImGui::MenuItem("Dark", nullptr, g_ed.settings.dark)) {
+                        g_ed.settings.dark = true;
+                        apply_app_theme(true);
+                        persist_settings();
+                    }
+                    if (ImGui::MenuItem("Light", nullptr, !g_ed.settings.dark)) {
+                        g_ed.settings.dark = false;
+                        apply_app_theme(false);
+                        persist_settings();
+                    }
+                    ImGui::Separator();
+                    ImGui::TextUnformatted("UI scale");
+                    float percent = g_ed.settings.scale * 100.0f;
+                    ImGui::SetNextItemWidth(220.0f * g_ed.settings.scale);
+                    if (ImGui::SliderFloat("##settings_scale_tmm", &percent, 75.0f, 200.0f, "%.0f%%")) {
+                        set_ui_scale(percent / 100.0f);
+                    }
+                    ImGui::Separator();
+                    if (ImGui::MenuItem("Grid Lines", nullptr, g_ed.settings.grid_lines)) {
+                        g_ed.settings.grid_lines = !g_ed.settings.grid_lines;
+                        persist_settings();
+                    }
+                    if (ImGui::MenuItem("Collision Overlay", nullptr, g_ed.settings.collision_overlay)) {
+                        g_ed.settings.collision_overlay = !g_ed.settings.collision_overlay;
                         persist_settings();
                     }
                     ImGui::EndMenu();
@@ -3133,6 +3211,38 @@ int run_editor() {
                         apply_app_theme(false);
                         persist_settings();
                     }
+                    ImGui::Separator();
+                    ImGui::TextUnformatted("UI scale");
+                    float percent = g_ed.settings.scale * 100.0f;
+                    ImGui::SetNextItemWidth(220.0f * g_ed.settings.scale);
+                    if (ImGui::SliderFloat("##view_scale_tsm", &percent, 75.0f, 200.0f, "%.0f%%")) {
+                        set_ui_scale(percent / 100.0f);
+                    }
+                    ImGui::EndMenu();
+                }
+                if (ImGui::BeginMenu("Settings")) {
+                    ImGui::TextUnformatted("Theme");
+                    if (ImGui::MenuItem("Dark", nullptr, g_ed.settings.dark)) {
+                        g_ed.settings.dark = true;
+                        apply_app_theme(true);
+                        persist_settings();
+                    }
+                    if (ImGui::MenuItem("Light", nullptr, !g_ed.settings.dark)) {
+                        g_ed.settings.dark = false;
+                        apply_app_theme(false);
+                        persist_settings();
+                    }
+                    ImGui::Separator();
+                    ImGui::TextUnformatted("UI scale");
+                    float percent = g_ed.settings.scale * 100.0f;
+                    ImGui::SetNextItemWidth(220.0f * g_ed.settings.scale);
+                    if (ImGui::SliderFloat("##settings_scale_tsm", &percent, 75.0f, 200.0f, "%.0f%%")) {
+                        set_ui_scale(percent / 100.0f);
+                    }
+                    ImGui::Separator();
+                    if (ImGui::MenuItem("Pixel Grid", nullptr, g_ed.tileset_editor.settings.pixel_grid)) {
+                        g_ed.tileset_editor.settings.pixel_grid = !g_ed.tileset_editor.settings.pixel_grid;
+                    }
                     ImGui::EndMenu();
                 }
             }
@@ -3161,13 +3271,13 @@ int run_editor() {
             ImGui::Separator();
 
             // 4. Body: Left Canvas & Right Sidebar
-            const float splitter_w = 6.0f;
-            const float status_bar_h = 24.0f;
+            const float splitter_w = 6.0f * g_ed.settings.scale;
+            const float status_bar_h = 24.0f * g_ed.settings.scale;
             const float avail_w = ImGui::GetContentRegionAvail().x;
             const float avail_h = ImGui::GetContentRegionAvail().y - status_bar_h;
 
-            const float min_sidebar = 300.0f;
-            const float min_canvas = 300.0f;
+            const float min_sidebar = 300.0f * g_ed.settings.scale;
+            const float min_canvas = 200.0f * g_ed.settings.scale;
             g_ed.sidebar_w = std::clamp(g_ed.sidebar_w, min_sidebar, std::max(min_sidebar, avail_w - min_canvas - splitter_w));
             const float canvas_w = std::max(min_canvas, avail_w - g_ed.sidebar_w - splitter_w);
 
@@ -3202,7 +3312,10 @@ int run_editor() {
             // 5. Status bar at bottom
             ImGui::Separator();
             ImGui::Text("%s", g_ed.status_msg.c_str());
-            ImGui::SameLine(ImGui::GetWindowWidth() - 360);
+            const float status_right_offset = 360.0f * g_ed.settings.scale;
+            if (ImGui::GetWindowWidth() > status_right_offset + 100.0f) {
+                ImGui::SameLine(ImGui::GetWindowWidth() - status_right_offset);
+            }
             if (g_ed.doc.in_bounds(g_ed.hovered_cell.x, g_ed.hovered_cell.y)) {
                 if (g_ed.doc.in_active_bounds(g_ed.hovered_cell.x, g_ed.hovered_cell.y)) {
                     ImGui::Text("Cell: (%d, %d) | Map: %dx%d - %dx%d px", g_ed.hovered_cell.x, g_ed.hovered_cell.y,
@@ -3220,7 +3333,7 @@ int run_editor() {
             }
         } else {
             // Tileset Maker View
-            const float status_bar_h = 24.0f;
+            const float status_bar_h = 24.0f * g_ed.settings.scale;
             const float avail_h = ImGui::GetContentRegionAvail().y - status_bar_h;
             g_ed.tileset_editor.draw_content(renderer, window, avail_h);
 
@@ -3233,7 +3346,10 @@ int run_editor() {
             // Status bar at bottom
             ImGui::Separator();
             ImGui::Text("%s", g_ed.tileset_editor.status.c_str());
-            ImGui::SameLine(ImGui::GetWindowWidth() - 360);
+            const float status_right_offset = 360.0f * g_ed.settings.scale;
+            if (ImGui::GetWindowWidth() > status_right_offset + 100.0f) {
+                ImGui::SameLine(ImGui::GetWindowWidth() - status_right_offset);
+            }
             ImGui::Text("Tileset: %s (%dpx)", g_ed.tileset_editor.project_name, g_ed.tileset_editor.doc.tile_size);
         }
 

@@ -7,6 +7,7 @@
 #include "app/theme.h"
 #include "gentileset.h"
 
+#include "../deps/tileset-maker-thingy/src/app/settings.h"
 #include "../deps/tileset-maker-thingy/src/app/tileset_editor.h"
 #include "../deps/tileset-maker-thingy/src/core/convert.h"
 #include "../deps/tileset-maker-thingy/src/core/io.h"
@@ -1597,6 +1598,61 @@ void test_tileset_maker_integration() {
     ImGui::DestroyContext(ctx);
 }
 
+void test_ui_scale_and_sync() {
+    using namespace tmm;
+
+    // 1. Clamping in settings parser
+    Settings s_low;
+    expect(parse_settings_text(s_low, "scale = 0.4\n"), "parse scale 0.4");
+    expect(std::abs(s_low.scale - 0.75f) < 0.001f, "scale clamps to min 0.75");
+
+    Settings s_high;
+    expect(parse_settings_text(s_high, "scale = 3.5\n"), "parse scale 3.5");
+    expect(std::abs(s_high.scale - 2.0f) < 0.001f, "scale clamps to max 2.0");
+
+    Settings s_valid;
+    expect(parse_settings_text(s_valid, "scale = 1.35\n"), "parse scale 1.35");
+    expect(std::abs(s_valid.scale - 1.35f) < 0.001f, "valid scale parses correctly");
+
+    // 2. apply_theme font and layout scaling
+    ImGuiContext* ctx = ImGui::CreateContext();
+    ImGui::SetCurrentContext(ctx);
+
+    apply_theme(true, 1.5f);
+    expect(std::abs(ImGui::GetStyle().FontScaleMain - 1.5f) < 0.001f, "apply_theme sets FontScaleMain to 1.5");
+    expect(ImGui::GetStyle().WindowPadding.x > 10.0f, "apply_theme scales window padding");
+
+    apply_theme(false, 0.85f);
+    expect(std::abs(ImGui::GetStyle().FontScaleMain - 0.85f) < 0.001f, "apply_theme sets FontScaleMain to 0.85");
+
+    ImGui::DestroyContext(ctx);
+
+    // 3. Synchronization between tmm::Settings and tsm::Settings
+    tsm::Settings tsm_s;
+    tsm_s.scale = 1.6f;
+    tsm_s.dark = true;
+
+    const std::string tsm_file = temp_path("test_tsm_sync_settings.cfg");
+    const std::string tmm_file = temp_path("test_tmm_sync_settings.cfg");
+
+    expect(tsm::save_settings_file(tsm_s, tsm_file), "save tsm settings file");
+
+    Settings tmm_s;
+    tsm::Settings tsm_loaded;
+    expect(tsm::load_settings_file(tsm_loaded, tsm_file), "load tsm settings file");
+    tmm_s.scale = tsm_loaded.scale;
+    tmm_s.dark = tsm_loaded.dark;
+    expect(save_settings_file(tmm_s, tmm_file), "save tmm settings file");
+
+    Settings tmm_verify;
+    expect(load_settings_file(tmm_verify, tmm_file), "load tmm settings file");
+    expect(std::abs(tmm_verify.scale - 1.6f) < 0.001f, "tmm and tsm share scale 1.6f");
+    expect(tmm_verify.dark == true, "tmm and tsm share dark theme");
+
+    std::remove(tsm_file.c_str());
+    std::remove(tmm_file.c_str());
+}
+
 } // namespace
 
 int main() {
@@ -1621,6 +1677,7 @@ int main() {
     test_tileset_preview_scaling();
     test_viewport_zoom_pan_math();
     test_tileset_maker_integration();
+    test_ui_scale_and_sync();
 
     if (g_fails) {
         std::cerr << g_fails << " test(s) failed\n";
