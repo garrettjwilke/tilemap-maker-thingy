@@ -7,6 +7,7 @@
 #include "core/tilemap_doc.h"
 #include "core/tileset.h"
 #include "core/types.h"
+#include "core/zip.h"
 
 #include "../deps/tileset-maker-thingy/src/app/tileset_editor.h"
 #include "../deps/tileset-maker-thingy/src/app/settings.h"
@@ -133,6 +134,7 @@ struct EditorState {
     bool export_terrain = true;
     bool export_tileset_png = true;
     bool export_tileset_proj = true;
+    bool export_zip = false;
 
     std::string status_msg = "Ready.";
     std::string current_map_path;
@@ -469,6 +471,7 @@ static void persist_settings(SDL_Window* window) {
     g_ed.settings.export_terrain = g_ed.export_terrain;
     g_ed.settings.export_tileset_png = g_ed.export_tileset_png;
     g_ed.settings.export_tileset_proj = g_ed.export_tileset_proj;
+    g_ed.settings.export_zip = g_ed.export_zip;
     ensure_config_dir();
     save_settings_file(g_ed.settings, settings_path());
 
@@ -1108,35 +1111,58 @@ static void execute_export() {
         ? g_ed.export_folder
         : (!g_ed.settings.last_export_dir.empty() ? g_ed.settings.last_export_dir.c_str() : nullptr);
 
-    nfdu8filteritem_t filters[2] = {{"PNG Image", "png"}, {"All Files", "*"}};
-    nfdu8char_t* out_path = nullptr;
-    const std::string def_name = g_ed.doc.name.empty() ? "map.png" : (g_ed.doc.name + ".png");
-
-    nfdresult_t res = NFD_SaveDialogU8(&out_path, filters, 2, default_dir, def_name.c_str());
-    if (res != NFD_OKAY || !out_path) {
-        if (res == NFD_ERROR) {
-            g_ed.status_msg = "Export dialog error: " + std::string(NFD_GetError());
-        }
-        return;
-    }
-
-    std::string chosen_png = out_path;
-    NFD_FreePathU8(out_path);
-
-    if (chosen_png.size() < 4 || (chosen_png.substr(chosen_png.size() - 4) != ".png" && chosen_png.substr(chosen_png.size() - 4) != ".PNG")) {
-        chosen_png += ".png";
-    }
-
+    std::string chosen_path;
     std::string dir;
     std::string stem;
-    const size_t last_slash = chosen_png.find_last_of("/\\");
+
+    if (g_ed.export_zip) {
+        nfdu8filteritem_t filters[2] = {{"ZIP Archive", "zip"}, {"All Files", "*"}};
+        nfdu8char_t* out_path = nullptr;
+        const std::string def_name = g_ed.doc.name.empty() ? "map.zip" : (g_ed.doc.name + ".zip");
+
+        nfdresult_t res = NFD_SaveDialogU8(&out_path, filters, 2, default_dir, def_name.c_str());
+        if (res != NFD_OKAY || !out_path) {
+            if (res == NFD_ERROR) {
+                g_ed.status_msg = "Export dialog error: " + std::string(NFD_GetError());
+            }
+            return;
+        }
+
+        chosen_path = out_path;
+        NFD_FreePathU8(out_path);
+
+        if (chosen_path.size() < 4 || (chosen_path.substr(chosen_path.size() - 4) != ".zip" && chosen_path.substr(chosen_path.size() - 4) != ".ZIP")) {
+            chosen_path += ".zip";
+        }
+    } else {
+        nfdu8filteritem_t filters[2] = {{"PNG Image", "png"}, {"All Files", "*"}};
+        nfdu8char_t* out_path = nullptr;
+        const std::string def_name = g_ed.doc.name.empty() ? "map.png" : (g_ed.doc.name + ".png");
+
+        nfdresult_t res = NFD_SaveDialogU8(&out_path, filters, 2, default_dir, def_name.c_str());
+        if (res != NFD_OKAY || !out_path) {
+            if (res == NFD_ERROR) {
+                g_ed.status_msg = "Export dialog error: " + std::string(NFD_GetError());
+            }
+            return;
+        }
+
+        chosen_path = out_path;
+        NFD_FreePathU8(out_path);
+
+        if (chosen_path.size() < 4 || (chosen_path.substr(chosen_path.size() - 4) != ".png" && chosen_path.substr(chosen_path.size() - 4) != ".PNG")) {
+            chosen_path += ".png";
+        }
+    }
+
+    const size_t last_slash = chosen_path.find_last_of("/\\");
     if (last_slash != std::string::npos) {
-        dir = chosen_png.substr(0, last_slash);
-        const std::string filename = chosen_png.substr(last_slash + 1);
+        dir = chosen_path.substr(0, last_slash);
+        const std::string filename = chosen_path.substr(last_slash + 1);
         stem = filename.substr(0, filename.size() - 4);
     } else {
         dir = ".";
-        stem = chosen_png.substr(0, chosen_png.size() - 4);
+        stem = chosen_path.substr(0, chosen_path.size() - 4);
     }
 
     std::snprintf(g_ed.export_folder, sizeof(g_ed.export_folder), "%s", dir.c_str());
@@ -1146,7 +1172,32 @@ static void execute_export() {
         g_ed.doc.name = stem;
     }
 
-    const std::string prefix = dir + "/" + stem;
+    struct TempDirGuard {
+        fs::path path;
+        ~TempDirGuard() {
+            if (!path.empty()) {
+                std::error_code ec;
+                fs::remove_all(path, ec);
+            }
+        }
+    };
+    TempDirGuard temp_guard;
+
+    std::string export_target_dir = dir;
+    if (g_ed.export_zip) {
+        static uint64_t s_zip_counter = 0;
+        std::error_code ec;
+        fs::path temp_base = fs::temp_directory_path(ec);
+        if (ec || temp_base.empty()) {
+            temp_base = dir;
+        }
+        fs::path temp_dir = temp_base / ("tmm_zip_exp_" + std::to_string(SDL_GetTicks()) + "_" + std::to_string(++s_zip_counter));
+        fs::create_directories(temp_dir, ec);
+        temp_guard.path = temp_dir;
+        export_target_dir = temp_dir.string();
+    }
+
+    const std::string prefix = export_target_dir + "/" + stem;
     std::vector<std::string> saved_files;
 
     // Companion tileset stem for exported tileset files
@@ -1212,7 +1263,7 @@ static void execute_export() {
 
     if (g_ed.doc.tileset.is_valid()) {
         if (g_ed.export_tileset_png) {
-            const std::string p = dir + "/" + ts_stem + ".png";
+            const std::string p = export_target_dir + "/" + ts_stem + ".png";
             std::string err = export_tileset_png(g_ed.doc.tileset, p);
             if (!err.empty()) {
                 g_ed.status_msg = "Tileset PNG export failed: " + err;
@@ -1221,7 +1272,7 @@ static void execute_export() {
             saved_files.push_back(ts_stem + ".png");
         }
         if (g_ed.export_tileset_proj) {
-            const std::string p = dir + "/" + ts_stem + ".tilesetproj";
+            const std::string p = export_target_dir + "/" + ts_stem + ".tilesetproj";
             std::string err = save_tileset_project_to_file(p, ts_stem);
             if (!err.empty()) {
                 g_ed.status_msg = "Tileset project export failed: " + err;
@@ -1230,7 +1281,7 @@ static void execute_export() {
             saved_files.push_back(ts_stem + ".tilesetproj");
         }
         if (g_ed.export_terrain) {
-            const std::string p = dir + "/" + ts_stem + ".terrain";
+            const std::string p = export_target_dir + "/" + ts_stem + ".terrain";
             std::string err = export_tileset_terrain(g_ed.doc.tileset, p, ts_stem + ".png");
             if (!err.empty()) {
                 g_ed.status_msg = "Terrain export failed: " + err;
@@ -1238,6 +1289,24 @@ static void execute_export() {
             }
             saved_files.push_back(ts_stem + ".terrain");
         }
+    }
+
+    if (g_ed.export_zip) {
+        ZipWriter zip;
+        for (const auto& fname : saved_files) {
+            const std::string src_path = export_target_dir + "/" + fname;
+            if (!zip.add_file_from_disk(fname, src_path)) {
+                g_ed.status_msg = "ZIP packaging failed for: " + fname;
+                return;
+            }
+        }
+        if (!zip.write_to_file(chosen_path)) {
+            g_ed.status_msg = "Failed to write ZIP archive: " + chosen_path;
+            return;
+        }
+        g_ed.status_msg = "Export complete: " + path_filename(chosen_path) + " (" + std::to_string(saved_files.size()) + " files)";
+        g_ed.show_export_modal = false;
+        return;
     }
 
     std::string msg = "Export complete: ";
@@ -3146,6 +3215,18 @@ static void draw_sidebar_export_page() {
     ImGui::Separator();
     ImGui::Spacing();
 
+    ImGui::TextColored(sec_hdr_col, "ARCHIVE / PACKAGING");
+    if (ImGui::Checkbox("Bundle as ZIP archive (.zip)", &g_ed.export_zip)) {
+        persist_settings();
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Pack all exported assets into a single .zip file");
+    }
+
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
+
     ImGui::TextColored(sec_hdr_col, "MAP FORMATS");
     ImGui::Checkbox("MDE Collision JSON", &g_ed.export_col_json);
     const int types_used = g_ed.doc.build_collision_grid().count_types_used();
@@ -3186,12 +3267,14 @@ static void draw_sidebar_export_page() {
 
     {
         ScopedStyleColor col(ImGuiCol_Button, ImVec4(0.2f, 0.58f, 0.35f, 1.0f));
-        if (ImGui::Button("EXPORT NOW", ImVec2(-1, 38.0f * g_ed.settings.scale))) {
+        const char* btn_label = g_ed.export_zip ? "EXPORT AS ZIP" : "EXPORT NOW";
+        if (ImGui::Button(btn_label, ImVec2(-1, 38.0f * g_ed.settings.scale))) {
             execute_export();
         }
     }
     if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("Export all checked formats to destination folder");
+        ImGui::SetTooltip(g_ed.export_zip ? "Export all checked formats bundled into a single ZIP archive"
+                                          : "Export all checked formats to destination folder");
     }
 }
 
@@ -3419,6 +3502,7 @@ int run_editor() {
     g_ed.export_terrain = g_ed.settings.export_terrain;
     g_ed.export_tileset_png = g_ed.settings.export_tileset_png;
     g_ed.export_tileset_proj = g_ed.settings.export_tileset_proj;
+    g_ed.export_zip = g_ed.settings.export_zip;
     if (g_ed.settings.sidebar_page >= 0 && g_ed.settings.sidebar_page <= 2) {
         g_ed.sidebar_page = static_cast<SidebarPage>(g_ed.settings.sidebar_page);
     }

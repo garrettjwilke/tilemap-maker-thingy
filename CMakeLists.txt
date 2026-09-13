@@ -43,6 +43,7 @@ add_library(tilemap_core STATIC
     src/core/io.cpp
     src/core/tilemap_doc.cpp
     src/core/tileset.cpp
+    src/core/zip.cpp
 )
 target_include_directories(tilemap_core PUBLIC src)
 target_link_libraries(tilemap_core PUBLIC gentileset)

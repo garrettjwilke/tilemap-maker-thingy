@@ -3,6 +3,7 @@
 #include "core/tilemap_doc.h"
 #include "core/tileset.h"
 #include "core/types.h"
+#include "core/zip.h"
 #include "app/settings.h"
 #include "app/theme.h"
 #include "gentileset.h"
@@ -1865,6 +1866,115 @@ void test_tileset_export() {
     std::remove(proj_path.c_str());
 }
 
+void test_zip_export() {
+    using namespace tmm;
+
+    // 1. Settings persistence for export_zip
+    Settings s;
+    s.export_zip = true;
+    std::string s_text = format_settings(s);
+    expect(s_text.find("export_zip=true") != std::string::npos, "settings text formats export_zip=true");
+
+    Settings s_parsed;
+    expect(parse_settings_text(s_parsed, "export_zip=true\n"), "parse export_zip=true");
+    expect(s_parsed.export_zip, "parsed export_zip is true");
+
+    expect(parse_settings_text(s_parsed, "export_zip=false\n"), "parse export_zip=false");
+    expect(!s_parsed.export_zip, "parsed export_zip is false");
+
+    // 2. In-memory ZipWriter basic tests
+    ZipWriter mem_zip;
+    std::string hello = "Hello World! This is a test file for ZIP export.\n";
+    std::vector<uint8_t> hello_bytes(hello.begin(), hello.end());
+    mem_zip.add_file("sub/hello.txt", hello_bytes);
+
+    std::string json_data = "{\"name\": \"test_map\", \"width\": 20, \"height\": 14}";
+    std::vector<uint8_t> json_bytes(json_data.begin(), json_data.end());
+    mem_zip.add_file("map.json", json_bytes);
+
+    expect(mem_zip.file_count() == 2, "mem_zip file count is 2");
+    expect(mem_zip.finalize(), "mem_zip finalize");
+
+    const std::vector<uint8_t>& zip_buf = mem_zip.buffer();
+    expect(zip_buf.size() > 50, "zip_buf has valid size");
+    // Verify PK header
+    expect(zip_buf[0] == 'P' && zip_buf[1] == 'K' && zip_buf[2] == 0x03 && zip_buf[3] == 0x04, "valid local header signature");
+
+    // 3. File packing from disk and write_to_file
+    const std::string tmp_txt = temp_path("tmm_test_file.txt");
+    const std::string tmp_bin = temp_path("tmm_test_file.bin");
+    const std::string tmp_zip = temp_path("tmm_test_archive.zip");
+
+    {
+        std::ofstream f(tmp_txt);
+        f << "Text file contents to pack into zip.";
+    }
+    {
+        std::ofstream f(tmp_bin, std::ios::binary);
+        for (int i = 0; i < 256; ++i) {
+            uint8_t b = static_cast<uint8_t>(i);
+            f.write(reinterpret_cast<char*>(&b), 1);
+        }
+    }
+
+    ZipWriter disk_zip;
+    expect(disk_zip.add_file_from_disk("file.txt", tmp_txt), "add_file_from_disk txt");
+    expect(disk_zip.add_file_from_disk("binary.dat", tmp_bin), "add_file_from_disk bin");
+    expect(!disk_zip.add_file_from_disk("bad.xyz", temp_path("non_existent_file.xyz")), "add non-existent file fails");
+    expect(disk_zip.file_count() == 2, "disk_zip file count is 2");
+
+    expect(disk_zip.write_to_file(tmp_zip), "write zip archive to disk");
+
+    // Verify written file exists and has size
+    std::ifstream z_in(tmp_zip, std::ios::binary | std::ios::ate);
+    expect(z_in.is_open(), "zip file opened for verification");
+    std::streamsize z_size = z_in.tellg();
+    expect(z_size > 80, "written zip file has non-trivial size");
+    z_in.seekg(0);
+    char magic[4];
+    z_in.read(magic, 4);
+    expect(magic[0] == 'P' && magic[1] == 'K' && magic[2] == 3 && magic[3] == 4, "magic PK 03 04 present in written file");
+    z_in.close();
+
+    // 4. End-to-end multi-file export bundling simulation
+    const std::string exp_png = temp_path("bundle_map.png");
+    const std::string exp_json = temp_path("bundle_map.json");
+    const std::string exp_col = temp_path("bundle_map_collisions.json");
+    const std::string exp_ts_png = temp_path("bundle_ts.png");
+    const std::string bundle_zip = temp_path("bundle_all.zip");
+
+    create_dummy_tileset_png(exp_ts_png, 16);
+
+    TilemapDoc doc(16, 12, 16);
+    expect(doc.tileset.load_from_file(exp_ts_png), "load tileset for doc");
+    expect(export_composite_png(doc, exp_png).empty(), "export composite png for bundle");
+    expect(save_map_json(doc, exp_json, "bundle_ts.png").empty(), "save map json for bundle");
+    expect(export_mde_collision_json(doc, exp_col).empty(), "export collision json for bundle");
+
+    ZipWriter bundle;
+    expect(bundle.add_file_from_disk("bundle_map.png", exp_png), "bundle add map.png");
+    expect(bundle.add_file_from_disk("bundle_map.json", exp_json), "bundle add map.json");
+    expect(bundle.add_file_from_disk("bundle_map_collisions.json", exp_col), "bundle add col.json");
+    expect(bundle.add_file_from_disk("bundle_ts.png", exp_ts_png), "bundle add ts.png");
+    expect(bundle.file_count() == 4, "bundle file count is 4");
+    expect(bundle.write_to_file(bundle_zip), "bundle write to file");
+
+    std::ifstream b_in(bundle_zip, std::ios::binary | std::ios::ate);
+    expect(b_in.is_open(), "bundle zip opened");
+    expect(b_in.tellg() > 200, "bundle zip size > 200 bytes");
+    b_in.close();
+
+    // Cleanup
+    std::remove(tmp_txt.c_str());
+    std::remove(tmp_bin.c_str());
+    std::remove(tmp_zip.c_str());
+    std::remove(exp_png.c_str());
+    std::remove(exp_json.c_str());
+    std::remove(exp_col.c_str());
+    std::remove(exp_ts_png.c_str());
+    std::remove(bundle_zip.c_str());
+}
+
 } // namespace
 
 int main() {
@@ -1893,6 +2003,7 @@ int main() {
     test_new_map_empty_tileset();
     test_tilesetproj_import();
     test_tileset_export();
+    test_zip_export();
 
     if (g_fails) {
         std::cerr << g_fails << " test(s) failed\n";
