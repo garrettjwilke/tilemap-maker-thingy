@@ -866,6 +866,13 @@ const CollisionType* TilemapDoc::get_collision_type(uint8_t id) const {
     return nullptr;
 }
 
+CollisionType* TilemapDoc::get_collision_type(uint8_t id) {
+    for (auto& ct : collision_types) {
+        if (ct.id == id) return &ct;
+    }
+    return nullptr;
+}
+
 CollisionGrid TilemapDoc::build_collision_grid() const {
     CollisionGrid grid;
     // Collision tile size is always 8x8 px

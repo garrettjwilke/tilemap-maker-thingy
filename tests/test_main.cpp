@@ -216,6 +216,36 @@ void test_collision() {
     doc.tileset.set_tile_collision(9, 2, 0);
     CollisionGrid col_none = doc.build_collision_grid();
     expect(!col_none.is_solid(2, 2) && col_none.get_type(2, 2) == 0, "tile set to None has no collision on map");
+
+    // Test mutable get_collision_type overload
+    CollisionType* mut_ct = doc.get_collision_type(1);
+    expect(mut_ct != nullptr, "get_collision_type(1) non-const found");
+    mut_ct->name = "Custom Wall";
+    mut_ct->color = Rgb{100, 150, 200};
+    const CollisionType* const_ct = const_cast<const TilemapDoc&>(doc).get_collision_type(1);
+    expect(const_ct != nullptr && const_ct->name == "Custom Wall", "customized collision type name persisted");
+    expect(const_ct->color.r == 100 && const_ct->color.g == 150 && const_ct->color.b == 200, "customized collision color persisted");
+
+    // Test batch fill and clear on tileset with tile (10, 1) protection
+    doc.tileset.cols = 12;
+    doc.tileset.rows = 4;
+    doc.tileset.init_tile_collisions(1);
+    for (int r = 0; r < doc.tileset.rows; ++r) {
+        for (int c = 0; c < doc.tileset.cols; ++c) {
+            doc.tileset.set_tile_collision(c, r, 2);
+        }
+    }
+    expect(doc.tileset.get_tile_collision(0, 0) == 2, "batch fill set tile (0, 0) to 2");
+    expect(doc.tileset.get_tile_collision(9, 2) == 2, "batch fill set tile (9, 2) to 2");
+    expect(doc.tileset.get_tile_collision(10, 1) == 0, "batch fill preserved tile (10, 1) as 0");
+
+    for (int r = 0; r < doc.tileset.rows; ++r) {
+        for (int c = 0; c < doc.tileset.cols; ++c) {
+            doc.tileset.set_tile_collision(c, r, 0);
+        }
+    }
+    expect(doc.tileset.get_tile_collision(0, 0) == 0, "batch clear set tile (0, 0) to 0");
+    expect(doc.tileset.get_tile_collision(10, 1) == 0, "batch clear kept tile (10, 1) as 0");
 }
 
 void test_tilemap_editing() {

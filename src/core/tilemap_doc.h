@@ -78,6 +78,7 @@ public:
     bool remove_collision_type(uint8_t id);
     void set_collision_type_color(uint8_t id, Rgb color);
     const CollisionType* get_collision_type(uint8_t id) const;
+    CollisionType* get_collision_type(uint8_t id);
 
     // Bounds checking
     bool in_bounds(int x, int y) const {
