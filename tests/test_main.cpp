@@ -4,7 +4,14 @@
 #include "core/tileset.h"
 #include "core/types.h"
 #include "app/settings.h"
+#include "app/theme.h"
 #include "gentileset.h"
+
+#include "../deps/tileset-maker-thingy/src/app/tileset_editor.h"
+#include "../deps/tileset-maker-thingy/src/core/convert.h"
+#include "../deps/tileset-maker-thingy/src/core/io.h"
+
+#include "imgui.h"
 
 #include <cmath>
 #include <cstring>
@@ -1453,6 +1460,143 @@ void test_viewport_zoom_pan_math() {
     expect(pinch_out == 3.0f, "pinch out scales zoom up");
 }
 
+void test_tileset_maker_integration() {
+    using namespace tmm;
+
+    IMGUI_CHECKVERSION();
+    ImGuiContext* ctx = ImGui::CreateContext();
+
+    // 1. Theme application and background colors
+    {
+        const Rgb dark_bg = background_clear_color(true);
+        const Rgb light_bg = background_clear_color(false);
+        expect(dark_bg.r < 50 && dark_bg.g < 50 && dark_bg.b < 50, "dark clear color is dark");
+        expect(light_bg.r > 200 && light_bg.g > 200 && light_bg.b > 200, "light clear color is light");
+        apply_theme(true, 1.0f);
+        apply_theme(false, 1.25f);
+    }
+
+    // 2. TilesetEditor embedded initialization and reset_new at Step 1
+    {
+        tsm::TilesetEditor ed;
+        ed.embedded = true;
+        ed.reset_new("dungeon_wall", 16);
+        expect(ed.embedded, "embedded flag is preserved across reset_new");
+        expect(ed.step == tsm::Step::Center, "new tileset starts at Step 1 (Center tile)");
+        expect(ed.doc.tile_size == 16, "tile size defaults to 16");
+        expect(std::string(ed.project_name) == "dungeon_wall", "project name matches");
+
+        // Paint center tile
+        ed.doc.set_pixel(tsm::TilesetDoc::kCenter.x, tsm::TilesetDoc::kCenter.y, 4, 4, 1);
+        expect(ed.doc.get_pixel(tsm::TilesetDoc::kCenter.x, tsm::TilesetDoc::kCenter.y, 4, 4) == 1, "center tile painted");
+
+        // Ensure atlas auto-generates 12x4 from Step 1
+        const std::string err = ed.ensure_atlas();
+        expect(err.empty(), "ensure_atlas succeeds from step 1");
+        expect(ed.has_atlas, "has_atlas set to true");
+        expect(ed.atlas.cols >= 12, "atlas has 12 columns");
+    }
+
+    // 3. In-memory AtlasDoc <-> Tileset synchronization
+    {
+        tsm::AtlasDoc atlas(16);
+        atlas.reset(16, 13);
+        atlas.apply_palette({tsm::Rgb{10, 20, 30}, tsm::Rgb{200, 210, 220}});
+        atlas.set_pixel(9, 2, 0, 0, 1);
+        atlas.set_pixel(9, 2, 15, 15, 1);
+        atlas.add_variant({9, 2}, 0.40f);
+
+        Tileset ts;
+        ts.cols = atlas.cols;
+        ts.rows = tsm::AtlasDoc::kRows;
+        ts.tile_size = atlas.tile_size;
+        ts.palette.clear();
+        for (const auto& c : atlas.palette) {
+            ts.palette.push_back(Rgb{c.r, c.g, c.b});
+        }
+        const int img_w = ts.cols * ts.tile_size;
+        const int img_h = ts.rows * ts.tile_size;
+        ts.pixels.assign(static_cast<size_t>(img_w * img_h), 0);
+        for (int row = 0; row < ts.rows; ++row) {
+            for (int col = 0; col < ts.cols; ++col) {
+                const auto tile = atlas.get_tile(col, row);
+                for (int y = 0; y < ts.tile_size; ++y) {
+                    for (int x = 0; x < ts.tile_size; ++x) {
+                        const int dest = (row * ts.tile_size + y) * img_w + (col * ts.tile_size + x);
+                        const int src = y * ts.tile_size + x;
+                        ts.pixels[static_cast<size_t>(dest)] = (src < static_cast<int>(tile.size())) ? tile[static_cast<size_t>(src)] : 0;
+                    }
+                }
+            }
+        }
+        ts.variants.clear();
+        for (const auto& b : atlas.bindings) {
+            VariantBinding vb;
+            vb.x = b.x;
+            vb.y = b.y;
+            vb.root_x = b.root_x;
+            vb.root_y = b.root_y;
+            vb.probability = b.probability;
+            ts.variants.push_back(vb);
+        }
+
+        expect(ts.is_valid(), "synced tileset is valid");
+        expect(ts.cols == 13, "synced tileset has 13 cols");
+        expect(ts.rows == 4, "synced tileset has 4 rows");
+        expect(ts.tile_size == 16, "synced tileset has 16px tiles");
+        expect(ts.palette.size() == 2, "palette has 2 colors");
+        expect(ts.palette[0] == Rgb{10, 20, 30}, "palette color 0 matches");
+        expect(ts.variants.size() == 1, "variant count matches");
+        expect(ts.variants[0].root_x == 9 && ts.variants[0].root_y == 2, "variant root matches");
+        expect(std::abs(ts.variants[0].probability - 0.40f) < 0.01f, "variant probability matches");
+
+        const int px_idx = (2 * 16 + 0) * img_w + (9 * 16 + 0);
+        expect(ts.pixels[static_cast<size_t>(px_idx)] == 1, "synced pixel at (0,0) of tile (9,2) is 1");
+    }
+
+    // 4. Companion file automatic discovery and import
+    {
+        tsm::AtlasDoc src_atlas(16);
+        src_atlas.reset(16, 13);
+        src_atlas.apply_palette({tsm::Rgb{0, 0, 0}, tsm::Rgb{255, 255, 255}, tsm::Rgb{120, 150, 180}});
+        src_atlas.add_variant({9, 2}, 0.35f);
+
+        const std::string png_file = temp_path("test_auto_companion.png");
+        const std::string terr_file = temp_path("test_auto_companion.terrain");
+
+        std::string err = tsm::save_atlas_png(src_atlas, png_file);
+        expect(err.empty(), "save_atlas_png succeeded");
+        err = tsm::save_terrain(src_atlas, terr_file, png_file);
+        expect(err.empty(), "save_terrain succeeded");
+
+        // Test A: Import by PNG path -> should automatically find companion .terrain file
+        tsm::AtlasDoc imported_atlas(16);
+        std::string loaded_png;
+        bool had_terrain = false;
+        err = tsm::import_12x4_tileset(imported_atlas, png_file, loaded_png, had_terrain);
+        expect(err.empty(), "import_12x4_tileset by PNG succeeded");
+        expect(had_terrain, "companion .terrain file automatically discovered and loaded");
+        expect(imported_atlas.bindings.size() == 1, "variant loaded from companion terrain");
+        expect(imported_atlas.bindings[0].root_x == 9 && imported_atlas.bindings[0].root_y == 2, "variant root is (9, 2)");
+        expect(std::abs(imported_atlas.bindings[0].probability - 0.35f) < 0.01f, "variant probability matches");
+
+        // Test B: Import by .terrain path -> should automatically find companion PNG file
+        tsm::AtlasDoc imported_atlas_b(16);
+        loaded_png.clear();
+        had_terrain = false;
+        err = tsm::import_12x4_tileset(imported_atlas_b, terr_file, loaded_png, had_terrain);
+        expect(err.empty(), "import_12x4_tileset by .terrain succeeded");
+        expect(had_terrain, "terrain loaded");
+        expect(!loaded_png.empty(), "companion PNG file automatically discovered and loaded");
+        expect(imported_atlas_b.bindings.size() == 1, "variant loaded from companion terrain");
+
+        std::remove(png_file.c_str());
+        std::remove(terr_file.c_str());
+    }
+
+    ImGui::DestroyContext(ctx);
+}
+
 } // namespace
 
 int main() {
@@ -1476,6 +1620,7 @@ int main() {
     test_tileset_terrain_and_variants();
     test_tileset_preview_scaling();
     test_viewport_zoom_pan_math();
+    test_tileset_maker_integration();
 
     if (g_fails) {
         std::cerr << g_fails << " test(s) failed\n";

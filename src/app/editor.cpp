@@ -1,11 +1,16 @@
 #include "editor.h"
 #include "settings.h"
+#include "theme.h"
 
 #include "core/collision.h"
 #include "core/io.h"
 #include "core/tilemap_doc.h"
 #include "core/tileset.h"
 #include "core/types.h"
+
+#include "../deps/tileset-maker-thingy/src/app/tileset_editor.h"
+#include "../deps/tileset-maker-thingy/src/core/convert.h"
+#include "../deps/tileset-maker-thingy/src/core/io.h"
 
 #include "imgui.h"
 #include "imgui_impl_sdl3.h"
@@ -18,15 +23,20 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <fstream>
 #include <string>
 #include <vector>
 
 namespace tmm {
 
+enum class AppView { Tilemap, TilesetMaker };
 enum class Tool { Paint, Line, Erase, Rect, Fill, Select, Eyedropper };
 enum class TilesetSidebarMode { Stamp, Collision, Variants };
 
 struct EditorState {
+    AppView current_view = AppView::Tilemap;
+    tsm::TilesetEditor tileset_editor;
+
     TilemapDoc doc;
     Settings settings;
 
@@ -163,110 +173,157 @@ static void update_tileset_texture(SDL_Renderer* renderer) {
     g_ed.texture_h = h;
 }
 
-static void apply_dark_theme() {
-    ImGuiStyle& style = ImGui::GetStyle();
-    style.WindowRounding = 0.0f;
-    style.ChildRounding = 4.0f;
-    style.FrameRounding = 4.0f;
-    style.PopupRounding = 6.0f;
-    style.ScrollbarRounding = 4.0f;
-    style.GrabRounding = 4.0f;
-    style.TabRounding = 4.0f;
-    style.WindowBorderSize = 0.0f;
-    style.FrameBorderSize = 0.0f;
-    style.ChildBorderSize = 1.0f;
-    style.ItemSpacing = ImVec2(8, 6);
-    style.FramePadding = ImVec2(6, 4);
-
-    ImVec4* colors = style.Colors;
-    colors[ImGuiCol_Text]                  = ImVec4(0.92f, 0.93f, 0.95f, 1.00f);
-    colors[ImGuiCol_TextDisabled]          = ImVec4(0.50f, 0.52f, 0.56f, 1.00f);
-    colors[ImGuiCol_WindowBg]              = ImVec4(0.12f, 0.13f, 0.15f, 1.00f);
-    colors[ImGuiCol_ChildBg]               = ImVec4(0.14f, 0.15f, 0.17f, 1.00f);
-    colors[ImGuiCol_PopupBg]               = ImVec4(0.14f, 0.15f, 0.18f, 0.98f);
-    colors[ImGuiCol_Border]                = ImVec4(0.24f, 0.26f, 0.30f, 1.00f);
-    colors[ImGuiCol_FrameBg]               = ImVec4(0.18f, 0.19f, 0.22f, 1.00f);
-    colors[ImGuiCol_FrameBgHovered]        = ImVec4(0.25f, 0.27f, 0.31f, 1.00f);
-    colors[ImGuiCol_FrameBgActive]         = ImVec4(0.29f, 0.31f, 0.36f, 1.00f);
-    colors[ImGuiCol_TitleBg]               = ImVec4(0.10f, 0.11f, 0.12f, 1.00f);
-    colors[ImGuiCol_TitleBgActive]         = ImVec4(0.16f, 0.17f, 0.20f, 1.00f);
-    colors[ImGuiCol_MenuBarBg]             = ImVec4(0.10f, 0.11f, 0.13f, 1.00f);
-    colors[ImGuiCol_ScrollbarBg]           = ImVec4(0.10f, 0.11f, 0.13f, 1.00f);
-    colors[ImGuiCol_ScrollbarGrab]         = ImVec4(0.28f, 0.30f, 0.34f, 1.00f);
-    colors[ImGuiCol_ScrollbarGrabHovered]  = ImVec4(0.36f, 0.38f, 0.44f, 1.00f);
-    colors[ImGuiCol_ScrollbarGrabActive]   = ImVec4(0.44f, 0.47f, 0.53f, 1.00f);
-    colors[ImGuiCol_CheckMark]             = ImVec4(0.38f, 0.72f, 0.98f, 1.00f);
-    colors[ImGuiCol_SliderGrab]            = ImVec4(0.35f, 0.65f, 0.90f, 1.00f);
-    colors[ImGuiCol_SliderGrabActive]      = ImVec4(0.45f, 0.75f, 1.00f, 1.00f);
-    colors[ImGuiCol_Button]                = ImVec4(0.20f, 0.22f, 0.26f, 1.00f);
-    colors[ImGuiCol_ButtonHovered]         = ImVec4(0.28f, 0.31f, 0.37f, 1.00f);
-    colors[ImGuiCol_ButtonActive]          = ImVec4(0.22f, 0.45f, 0.70f, 1.00f);
-    colors[ImGuiCol_Header]                = ImVec4(0.22f, 0.25f, 0.30f, 1.00f);
-    colors[ImGuiCol_HeaderHovered]         = ImVec4(0.28f, 0.32f, 0.39f, 1.00f);
-    colors[ImGuiCol_HeaderActive]          = ImVec4(0.33f, 0.38f, 0.46f, 1.00f);
-    colors[ImGuiCol_Separator]             = ImVec4(0.22f, 0.24f, 0.27f, 1.00f);
-    colors[ImGuiCol_Tab]                   = ImVec4(0.14f, 0.15f, 0.18f, 1.00f);
-    colors[ImGuiCol_TabHovered]            = ImVec4(0.26f, 0.29f, 0.35f, 1.00f);
-    colors[ImGuiCol_TabActive]             = ImVec4(0.20f, 0.23f, 0.28f, 1.00f);
-    colors[ImGuiCol_TabUnfocused]          = ImVec4(0.12f, 0.13f, 0.15f, 1.00f);
-    colors[ImGuiCol_TabUnfocusedActive]    = ImVec4(0.16f, 0.18f, 0.22f, 1.00f);
+static bool file_exists(const std::string& path) {
+    if (path.empty()) return false;
+    std::ifstream f(path.c_str(), std::ios::binary);
+    return f.good();
 }
 
-static void apply_light_theme() {
-    ImGuiStyle& style = ImGui::GetStyle();
-    style.WindowRounding = 0.0f;
-    style.ChildRounding = 4.0f;
-    style.FrameRounding = 4.0f;
-    style.PopupRounding = 6.0f;
-    style.ScrollbarRounding = 4.0f;
-    style.GrabRounding = 4.0f;
-    style.TabRounding = 4.0f;
-    style.WindowBorderSize = 0.0f;
-    style.FrameBorderSize = 0.0f;
-    style.ChildBorderSize = 1.0f;
-    style.ItemSpacing = ImVec2(8, 6);
-    style.FramePadding = ImVec2(6, 4);
-
-    ImVec4* colors = style.Colors;
-    colors[ImGuiCol_Text]                  = ImVec4(0.12f, 0.14f, 0.18f, 1.00f);
-    colors[ImGuiCol_TextDisabled]          = ImVec4(0.52f, 0.56f, 0.62f, 1.00f);
-    colors[ImGuiCol_WindowBg]              = ImVec4(0.95f, 0.96f, 0.97f, 1.00f);
-    colors[ImGuiCol_ChildBg]               = ImVec4(0.92f, 0.93f, 0.95f, 1.00f);
-    colors[ImGuiCol_PopupBg]               = ImVec4(0.98f, 0.98f, 0.99f, 0.98f);
-    colors[ImGuiCol_Border]                = ImVec4(0.78f, 0.81f, 0.86f, 1.00f);
-    colors[ImGuiCol_FrameBg]               = ImVec4(0.85f, 0.87f, 0.91f, 1.00f);
-    colors[ImGuiCol_FrameBgHovered]        = ImVec4(0.79f, 0.82f, 0.88f, 1.00f);
-    colors[ImGuiCol_FrameBgActive]         = ImVec4(0.73f, 0.77f, 0.84f, 1.00f);
-    colors[ImGuiCol_TitleBg]               = ImVec4(0.90f, 0.91f, 0.93f, 1.00f);
-    colors[ImGuiCol_TitleBgActive]         = ImVec4(0.86f, 0.88f, 0.92f, 1.00f);
-    colors[ImGuiCol_MenuBarBg]             = ImVec4(0.89f, 0.91f, 0.93f, 1.00f);
-    colors[ImGuiCol_ScrollbarBg]           = ImVec4(0.92f, 0.93f, 0.95f, 1.00f);
-    colors[ImGuiCol_ScrollbarGrab]         = ImVec4(0.74f, 0.76f, 0.80f, 1.00f);
-    colors[ImGuiCol_ScrollbarGrabHovered]  = ImVec4(0.60f, 0.63f, 0.68f, 1.00f);
-    colors[ImGuiCol_ScrollbarGrabActive]   = ImVec4(0.48f, 0.51f, 0.56f, 1.00f);
-    colors[ImGuiCol_CheckMark]             = ImVec4(0.18f, 0.50f, 0.90f, 1.00f);
-    colors[ImGuiCol_SliderGrab]            = ImVec4(0.25f, 0.55f, 0.92f, 1.00f);
-    colors[ImGuiCol_SliderGrabActive]      = ImVec4(0.15f, 0.45f, 0.85f, 1.00f);
-    colors[ImGuiCol_Button]                = ImVec4(0.84f, 0.86f, 0.90f, 1.00f);
-    colors[ImGuiCol_ButtonHovered]         = ImVec4(0.77f, 0.81f, 0.87f, 1.00f);
-    colors[ImGuiCol_ButtonActive]          = ImVec4(0.22f, 0.52f, 0.88f, 1.00f);
-    colors[ImGuiCol_Header]                = ImVec4(0.83f, 0.86f, 0.91f, 1.00f);
-    colors[ImGuiCol_HeaderHovered]         = ImVec4(0.76f, 0.80f, 0.88f, 1.00f);
-    colors[ImGuiCol_HeaderActive]          = ImVec4(0.68f, 0.74f, 0.84f, 1.00f);
-    colors[ImGuiCol_Separator]             = ImVec4(0.78f, 0.80f, 0.85f, 1.00f);
-    colors[ImGuiCol_Tab]                   = ImVec4(0.86f, 0.88f, 0.92f, 1.00f);
-    colors[ImGuiCol_TabHovered]            = ImVec4(0.93f, 0.95f, 0.98f, 1.00f);
-    colors[ImGuiCol_TabActive]             = ImVec4(0.97f, 0.98f, 1.00f, 1.00f);
-    colors[ImGuiCol_TabUnfocused]          = ImVec4(0.86f, 0.88f, 0.92f, 1.00f);
-    colors[ImGuiCol_TabUnfocusedActive]    = ImVec4(0.90f, 0.92f, 0.95f, 1.00f);
-}
-
-static void apply_theme(bool dark) {
-    if (dark) {
-        apply_dark_theme();
-    } else {
-        apply_light_theme();
+static void sync_atlas_to_tileset(const tsm::AtlasDoc& atlas, Tileset& tileset) {
+    tileset.cols = atlas.cols;
+    tileset.rows = tsm::AtlasDoc::kRows;
+    tileset.tile_size = atlas.tile_size;
+    tileset.palette.clear();
+    for (const auto& c : atlas.palette) {
+        tileset.palette.push_back(Rgb{c.r, c.g, c.b});
     }
+    const int img_w = tileset.cols * tileset.tile_size;
+    const int img_h = tileset.rows * tileset.tile_size;
+    tileset.pixels.assign(static_cast<size_t>(img_w * img_h), 0);
+    for (int row = 0; row < tileset.rows; ++row) {
+        for (int col = 0; col < tileset.cols; ++col) {
+            const auto tile = atlas.get_tile(col, row);
+            for (int y = 0; y < tileset.tile_size; ++y) {
+                for (int x = 0; x < tileset.tile_size; ++x) {
+                    const int dest = (row * tileset.tile_size + y) * img_w + (col * tileset.tile_size + x);
+                    const int src = y * tileset.tile_size + x;
+                    tileset.pixels[static_cast<size_t>(dest)] = (src < static_cast<int>(tile.size())) ? tile[static_cast<size_t>(src)] : 0;
+                }
+            }
+        }
+    }
+    tileset.variants.clear();
+    for (const auto& b : atlas.bindings) {
+        VariantBinding vb;
+        vb.x = b.x;
+        vb.y = b.y;
+        vb.root_x = b.root_x;
+        vb.root_y = b.root_y;
+        vb.probability = b.probability;
+        tileset.variants.push_back(vb);
+    }
+    if (tileset.tile_collisions.size() != static_cast<size_t>(tileset.cols * tileset.rows)) {
+        tileset.init_tile_collisions(1);
+    }
+}
+
+static void sync_tileset_to_atlas(const Tileset& tileset, tsm::AtlasDoc& atlas) {
+    atlas.reset(tileset.tile_size, tileset.cols);
+    std::vector<tsm::Rgb> pal;
+    for (const auto& c : tileset.palette) {
+        pal.push_back(tsm::Rgb{c.r, c.g, c.b});
+    }
+    atlas.apply_palette(pal);
+    const int img_w = tileset.image_width();
+    for (int row = 0; row < tileset.rows; ++row) {
+        for (int col = 0; col < tileset.cols; ++col) {
+            std::vector<uint8_t> tile(static_cast<size_t>(tileset.tile_size * tileset.tile_size), 0);
+            for (int y = 0; y < tileset.tile_size; ++y) {
+                for (int x = 0; x < tileset.tile_size; ++x) {
+                    const int src = (row * tileset.tile_size + y) * img_w + (col * tileset.tile_size + x);
+                    const int dest = y * tileset.tile_size + x;
+                    if (src < static_cast<int>(tileset.pixels.size())) {
+                        tile[static_cast<size_t>(dest)] = tileset.pixels[static_cast<size_t>(src)];
+                    }
+                }
+            }
+            atlas.set_tile(col, row, tile);
+        }
+    }
+    atlas.bindings.clear();
+    for (const auto& b : tileset.variants) {
+        tsm::VariantBinding vb;
+        vb.x = b.x;
+        vb.y = b.y;
+        vb.root_x = b.root_x;
+        vb.root_y = b.root_y;
+        vb.probability = b.probability;
+        atlas.bindings.push_back(vb);
+    }
+    atlas.painted = true;
+}
+
+static void switch_to_view(AppView target, SDL_Renderer* renderer) {
+    if (g_ed.current_view == target) return;
+
+    if (target == AppView::TilesetMaker) {
+        g_ed.tileset_editor.embedded = true;
+        g_ed.tileset_editor.settings.dark = g_ed.settings.dark;
+        g_ed.tileset_editor.settings.scale = g_ed.settings.scale;
+
+        // If no current tileset, start tileset maker thingy as a new tileset at step 1
+        if (!g_ed.doc.tileset.is_valid()) {
+            g_ed.tileset_editor.reset_new("tileset", g_ed.doc.tile_size);
+            g_ed.tileset_editor.step = tsm::Step::Center;
+            g_ed.tileset_editor.configure_view();
+            g_ed.status_msg = "Tileset Maker: started new tileset at Step 1 (Center tile).";
+        } else {
+            // If there is an existing tileset, import the PNG or terrain (which automatically finds companions)
+            bool imported = false;
+            std::string path_to_import;
+            if (!g_ed.doc.tileset.terrain_path.empty() && file_exists(g_ed.doc.tileset.terrain_path)) {
+                path_to_import = g_ed.doc.tileset.terrain_path;
+            } else if (!g_ed.doc.tileset.png_path.empty() && file_exists(g_ed.doc.tileset.png_path)) {
+                path_to_import = g_ed.doc.tileset.png_path;
+            }
+
+            if (!path_to_import.empty()) {
+                imported = g_ed.tileset_editor.import_12x4(path_to_import);
+            }
+
+            if (!imported) {
+                // In-memory fallback if file doesn't exist on disk or import returned false
+                sync_tileset_to_atlas(g_ed.doc.tileset, g_ed.tileset_editor.atlas);
+                tsm::convert_atlas_to_tileset(g_ed.tileset_editor.atlas, g_ed.tileset_editor.doc);
+                g_ed.tileset_editor.step = tsm::Step::Variants;
+                g_ed.tileset_editor.has_atlas = true;
+                g_ed.tileset_editor.ui.project_open = true;
+                g_ed.tileset_editor.configure_view();
+            }
+            g_ed.status_msg = "Tileset Maker: loaded tileset.";
+        }
+        g_ed.current_view = AppView::TilesetMaker;
+    } else if (target == AppView::Tilemap) {
+        // Returning to tilemap view
+        std::string ensure_err = g_ed.tileset_editor.ensure_atlas();
+        if (ensure_err.empty()) {
+            const int new_ts = g_ed.tileset_editor.doc.tile_size;
+            if (g_ed.doc.tile_size != new_ts && (new_ts == 8 || new_ts == 16)) {
+                const int w8 = g_ed.doc.width_8px();
+                const int h8 = g_ed.doc.height_8px();
+                g_ed.doc.reset_8px(w8, h8, new_ts);
+            }
+            sync_atlas_to_tileset(g_ed.tileset_editor.atlas, g_ed.doc.tileset);
+            if (!g_ed.tileset_editor.last_exported_png_path.empty()) {
+                g_ed.doc.tileset.png_path = g_ed.tileset_editor.last_exported_png_path;
+            }
+            if (!g_ed.tileset_editor.last_exported_terrain_path.empty()) {
+                g_ed.doc.tileset.terrain_path = g_ed.tileset_editor.last_exported_terrain_path;
+            }
+            update_tileset_texture(renderer);
+            g_ed.doc.solve_all_autotiles();
+            g_ed.status_msg = "Returned to Tilemap Maker (tileset synced).";
+        } else {
+            g_ed.status_msg = "Returned to Tilemap Maker.";
+        }
+        g_ed.current_view = AppView::Tilemap;
+    }
+}
+
+static void apply_app_theme(bool dark) {
+    tmm::apply_theme(dark, g_ed.settings.scale);
+    g_ed.tileset_editor.settings.dark = dark;
+    g_ed.tileset_editor.settings.scale = g_ed.settings.scale;
 }
 
 static SDL_Window* s_window = nullptr;
@@ -766,33 +823,70 @@ struct ScopedStyleColor {
     ScopedStyleColor& operator=(const ScopedStyleColor&) = delete;
 };
 
-static void draw_top_nav_and_view_row() {
-    // Global View Controls (Grid & Collision checkboxes)
-    if (ImGui::Checkbox("Grid", &g_ed.settings.grid_lines)) {
-        persist_settings();
-    }
-    ImGui::SameLine();
-    if (ImGui::Checkbox("Collision", &g_ed.settings.collision_overlay)) {
-        persist_settings();
-    }
-    ImGui::SameLine();
-    ImGui::TextDisabled("|");
-    ImGui::SameLine();
+static void draw_top_nav_and_view_row(SDL_Renderer* renderer) {
+    // View Switcher Buttons
+    const bool is_map = (g_ed.current_view == AppView::Tilemap);
+    const bool is_ts = (g_ed.current_view == AppView::TilesetMaker);
 
-    // Zoom Controls
-    if (ImGui::Button("-##ZoomOut")) {
-        g_ed.zoom = std::max(0.25f, g_ed.zoom / 1.25f);
+    if (is_map) {
+        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.20f, 0.50f, 0.88f, 1.0f));
     }
-    ImGui::SameLine();
-    ImGui::Text("%.0f%%", g_ed.zoom * 100.0f);
-    ImGui::SameLine();
-    if (ImGui::Button("+##ZoomIn")) {
-        g_ed.zoom = std::min(16.0f, g_ed.zoom * 1.25f);
+    if (ImGui::Button("Map Editor", ImVec2(100, 24))) {
+        if (!is_map) switch_to_view(AppView::Tilemap, renderer);
     }
-    ImGui::SameLine();
-    if (ImGui::Button("Fit View")) {
-        g_ed.zoom = 2.0f;
-        g_ed.pan = ImVec2(60, 40);
+    if (is_map) ImGui::PopStyleColor();
+
+    ImGui::SameLine(0, 4);
+
+    if (is_ts) {
+        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.20f, 0.50f, 0.88f, 1.0f));
+    }
+    if (ImGui::Button("Tileset Maker", ImVec2(105, 24))) {
+        if (!is_ts) switch_to_view(AppView::TilesetMaker, renderer);
+    }
+    if (is_ts) ImGui::PopStyleColor();
+
+    ImGui::SameLine(0, 12);
+    ImGui::TextDisabled("|");
+    ImGui::SameLine(0, 12);
+
+    if (is_map) {
+        // Global View Controls (Grid & Collision checkboxes)
+        if (ImGui::Checkbox("Grid", &g_ed.settings.grid_lines)) {
+            persist_settings();
+        }
+        ImGui::SameLine();
+        if (ImGui::Checkbox("Collision", &g_ed.settings.collision_overlay)) {
+            persist_settings();
+        }
+        ImGui::SameLine();
+        ImGui::TextDisabled("|");
+        ImGui::SameLine();
+
+        // Zoom Controls
+        if (ImGui::Button("-##ZoomOut")) {
+            g_ed.zoom = std::max(0.25f, g_ed.zoom / 1.25f);
+        }
+        ImGui::SameLine();
+        ImGui::Text("%.0f%%", g_ed.zoom * 100.0f);
+        ImGui::SameLine();
+        if (ImGui::Button("+##ZoomIn")) {
+            g_ed.zoom = std::min(16.0f, g_ed.zoom * 1.25f);
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Fit View")) {
+            g_ed.zoom = 2.0f;
+            g_ed.pan = ImVec2(60, 40);
+        }
+    } else {
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextColored(ImVec4(0.4f, 0.75f, 1.0f, 1.0f), "TILESET MAKER MODE");
+        ImGui::SameLine(0, 16);
+        ImGui::TextDisabled("Create autotile terrains and pixel art for your maps");
+        ImGui::SameLine(ImGui::GetWindowWidth() - 210);
+        if (ImGui::Button("Apply & Return to Map", ImVec2(190, 24))) {
+            switch_to_view(AppView::Tilemap, renderer);
+        }
     }
 }
 
@@ -1755,6 +1849,15 @@ static void draw_sidebar_content(SDL_Renderer* renderer) {
     if (ImGui::Button("Import Tileset...", ImVec2(-1, 28))) {
         open_tileset_dialog(renderer);
     }
+    if (!g_ed.doc.tileset.is_valid()) {
+        if (ImGui::Button("Create in Tileset Maker...", ImVec2(-1, 26))) {
+            switch_to_view(AppView::TilesetMaker, renderer);
+        }
+    } else {
+        if (ImGui::Button("Edit in Tileset Maker...", ImVec2(-1, 26))) {
+            switch_to_view(AppView::TilesetMaker, renderer);
+        }
+    }
 
     if (g_ed.doc.tileset.is_valid()) {
         auto short_name = [](const std::string& path) -> std::string {
@@ -2636,7 +2739,10 @@ int run_editor() {
     io.IniFilename = nullptr;
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
 
-    apply_theme(g_ed.settings.dark);
+    apply_app_theme(g_ed.settings.dark);
+    g_ed.tileset_editor.embedded = true;
+    g_ed.tileset_editor.settings.dark = g_ed.settings.dark;
+    g_ed.tileset_editor.settings.scale = g_ed.settings.scale;
 
     ImGui_ImplSDL3_InitForSDLRenderer(window, renderer);
     ImGui_ImplSDLRenderer3_Init(renderer);
@@ -2682,227 +2788,353 @@ int run_editor() {
 
         // Global shortcuts (processed after NewFrame so input events are current)
         if (!io.WantTextInput) {
-            const bool cmd = io.KeyCtrl || io.KeySuper;
+            if (ImGui::IsKeyPressed(ImGuiKey_F1)) {
+                switch_to_view(AppView::Tilemap, renderer);
+            }
+            if (ImGui::IsKeyPressed(ImGuiKey_F2)) {
+                switch_to_view(AppView::TilesetMaker, renderer);
+            }
+        }
 
-            if (cmd && ImGui::IsKeyPressed(ImGuiKey_D)) {
-                deselect();
-            }
-            if (cmd && ImGui::IsKeyPressed(ImGuiKey_0)) {
-                g_ed.zoom = 1.0f;
-            }
-            if (cmd && (ImGui::IsKeyPressed(ImGuiKey_Equal) || ImGui::IsKeyPressed(ImGuiKey_KeypadAdd))) {
-                g_ed.zoom = std::min(16.0f, g_ed.zoom * 1.25f);
-            }
-            if (cmd && (ImGui::IsKeyPressed(ImGuiKey_Minus) || ImGui::IsKeyPressed(ImGuiKey_KeypadSubtract))) {
-                g_ed.zoom = std::max(0.25f, g_ed.zoom / 1.25f);
-            }
-            if (cmd && ImGui::IsKeyPressed(ImGuiKey_Z)) {
-                if (g_ed.selection_lifted) {
-                    cancel_or_deselect();
-                } else if (io.KeyShift) {
-                    g_ed.doc.redo();
-                } else {
-                    g_ed.doc.undo();
-                }
-            }
-            if (cmd && ImGui::IsKeyPressed(ImGuiKey_Y)) {
-                if (!g_ed.selection_lifted) {
-                    g_ed.doc.redo();
-                }
-            }
-            if (cmd && ImGui::IsKeyPressed(ImGuiKey_S)) {
-                save_map_dialog();
-            }
-            if (cmd && ImGui::IsKeyPressed(ImGuiKey_O)) {
-                open_map_dialog(renderer);
-            }
-            if (cmd && ImGui::IsKeyPressed(ImGuiKey_N)) {
-                g_ed.show_new_modal = true;
-            }
-            if (cmd && ImGui::IsKeyPressed(ImGuiKey_E)) {
-                execute_export();
-            }
-            if (cmd && ImGui::IsKeyPressed(ImGuiKey_C) && g_ed.has_selection && !g_ed.paste_mode) {
-                copy_selection();
-            }
-            if (cmd && ImGui::IsKeyPressed(ImGuiKey_X) && g_ed.has_selection && !g_ed.paste_mode) {
-                cut_selection();
-            }
-            if (cmd && ImGui::IsKeyPressed(ImGuiKey_V) && !g_ed.clipboard.is_empty()) {
-                start_paste();
-            }
+        if (g_ed.current_view == AppView::Tilemap) {
+            if (!io.WantTextInput) {
+                const bool cmd = io.KeyCtrl || io.KeySuper;
 
-            // Keyboard navigation for floating paste or selection
-            if (g_ed.paste_mode) {
-                if (ImGui::IsKeyPressed(ImGuiKey_Enter) || ImGui::IsKeyPressed(ImGuiKey_KeypadEnter)) {
-                    commit_paste();
-                } else if (ImGui::IsKeyPressed(ImGuiKey_Escape) || ImGui::IsKeyPressed(ImGuiKey_Delete) || ImGui::IsKeyPressed(ImGuiKey_Backspace)) {
-                    cancel_paste();
-                } else {
-                    int dx = 0;
-                    int dy = 0;
-                    if (ImGui::IsKeyPressed(ImGuiKey_LeftArrow, true))  dx -= 1;
-                    if (ImGui::IsKeyPressed(ImGuiKey_RightArrow, true)) dx += 1;
-                    if (ImGui::IsKeyPressed(ImGuiKey_UpArrow, true))    dy -= 1;
-                    if (ImGui::IsKeyPressed(ImGuiKey_DownArrow, true))  dy += 1;
-                    if (dx != 0 || dy != 0) {
-                        const int min_x = -g_ed.doc.buffer;
-                        const int min_y = -g_ed.doc.buffer;
-                        const int max_x = g_ed.doc.width + g_ed.doc.buffer - g_ed.clipboard.w;
-                        const int max_y = g_ed.doc.height + g_ed.doc.buffer - g_ed.clipboard.h;
-                        g_ed.paste_pos.x = std::clamp(g_ed.paste_pos.x + dx, min_x, std::max(min_x, max_x));
-                        g_ed.paste_pos.y = std::clamp(g_ed.paste_pos.y + dy, min_y, std::max(min_y, max_y));
-                        g_ed.selection.x = g_ed.paste_pos.x;
-                        g_ed.selection.y = g_ed.paste_pos.y;
-                        g_ed.doc.set_clip_rect(&g_ed.selection, TilemapDoc::ClipShape::Rect);
+                if (cmd && ImGui::IsKeyPressed(ImGuiKey_D)) {
+                    deselect();
+                }
+                if (cmd && ImGui::IsKeyPressed(ImGuiKey_0)) {
+                    g_ed.zoom = 1.0f;
+                }
+                if (cmd && (ImGui::IsKeyPressed(ImGuiKey_Equal) || ImGui::IsKeyPressed(ImGuiKey_KeypadAdd))) {
+                    g_ed.zoom = std::min(16.0f, g_ed.zoom * 1.25f);
+                }
+                if (cmd && (ImGui::IsKeyPressed(ImGuiKey_Minus) || ImGui::IsKeyPressed(ImGuiKey_KeypadSubtract))) {
+                    g_ed.zoom = std::max(0.25f, g_ed.zoom / 1.25f);
+                }
+                if (cmd && ImGui::IsKeyPressed(ImGuiKey_Z)) {
+                    if (g_ed.selection_lifted) {
+                        cancel_or_deselect();
+                    } else if (io.KeyShift) {
+                        g_ed.doc.redo();
+                    } else {
+                        g_ed.doc.undo();
                     }
                 }
-            } else {
-                if (ImGui::IsKeyPressed(ImGuiKey_Escape)) {
-                    cancel_or_deselect();
+                if (cmd && ImGui::IsKeyPressed(ImGuiKey_Y)) {
+                    if (!g_ed.selection_lifted) {
+                        g_ed.doc.redo();
+                    }
                 }
-                if (g_ed.selection_lifted && (ImGui::IsKeyPressed(ImGuiKey_Enter) || ImGui::IsKeyPressed(ImGuiKey_KeypadEnter))) {
-                    apply_moved_selection();
+                if (cmd && ImGui::IsKeyPressed(ImGuiKey_S)) {
+                    save_map_dialog();
                 }
-                if ((ImGui::IsKeyPressed(ImGuiKey_Delete) || ImGui::IsKeyPressed(ImGuiKey_Backspace)) && g_ed.has_selection) {
-                    delete_selection();
+                if (cmd && ImGui::IsKeyPressed(ImGuiKey_O)) {
+                    open_map_dialog(renderer);
                 }
-                if (g_ed.has_selection && !g_ed.is_moving_selection) {
-                    int dx = 0;
-                    int dy = 0;
-                    if (ImGui::IsKeyPressed(ImGuiKey_LeftArrow, true))  dx -= 1;
-                    if (ImGui::IsKeyPressed(ImGuiKey_RightArrow, true)) dx += 1;
-                    if (ImGui::IsKeyPressed(ImGuiKey_UpArrow, true))    dy -= 1;
-                    if (ImGui::IsKeyPressed(ImGuiKey_DownArrow, true))  dy += 1;
-                    if (dx != 0 || dy != 0) {
-                        const int min_x = -g_ed.doc.buffer;
-                        const int min_y = -g_ed.doc.buffer;
-                        const int max_x = g_ed.doc.width + g_ed.doc.buffer - g_ed.selection.w;
-                        const int max_y = g_ed.doc.height + g_ed.doc.buffer - g_ed.selection.h;
-                        const int target_x = std::clamp(g_ed.selection.x + dx, min_x, std::max(min_x, max_x));
-                        const int target_y = std::clamp(g_ed.selection.y + dy, min_y, std::max(min_y, max_y));
-                        if (target_x != g_ed.selection.x || target_y != g_ed.selection.y) {
-                            if (!g_ed.selection_lifted) {
-                                g_ed.selection_origin = g_ed.selection;
-                                if (g_ed.selection_is_circle) {
-                                    g_ed.floating_clip = g_ed.doc.copy_ellipse(g_ed.selection);
-                                    g_ed.doc.begin_stroke("Move Selection");
-                                    g_ed.doc.erase_ellipse(g_ed.selection);
-                                } else {
-                                    g_ed.floating_clip = g_ed.doc.copy_rect(g_ed.selection);
-                                    g_ed.doc.begin_stroke("Move Selection");
-                                    g_ed.doc.erase_rect(g_ed.selection);
+                if (cmd && ImGui::IsKeyPressed(ImGuiKey_N)) {
+                    g_ed.show_new_modal = true;
+                }
+                if (cmd && ImGui::IsKeyPressed(ImGuiKey_E)) {
+                    execute_export();
+                }
+                if (cmd && ImGui::IsKeyPressed(ImGuiKey_C) && g_ed.has_selection && !g_ed.paste_mode) {
+                    copy_selection();
+                }
+                if (cmd && ImGui::IsKeyPressed(ImGuiKey_X) && g_ed.has_selection && !g_ed.paste_mode) {
+                    cut_selection();
+                }
+                if (cmd && ImGui::IsKeyPressed(ImGuiKey_V) && !g_ed.clipboard.is_empty()) {
+                    start_paste();
+                }
+
+                // Keyboard navigation for floating paste or selection
+                if (g_ed.paste_mode) {
+                    if (ImGui::IsKeyPressed(ImGuiKey_Enter) || ImGui::IsKeyPressed(ImGuiKey_KeypadEnter)) {
+                        commit_paste();
+                    } else if (ImGui::IsKeyPressed(ImGuiKey_Escape) || ImGui::IsKeyPressed(ImGuiKey_Delete) || ImGui::IsKeyPressed(ImGuiKey_Backspace)) {
+                        cancel_paste();
+                    } else {
+                        int dx = 0;
+                        int dy = 0;
+                        if (ImGui::IsKeyPressed(ImGuiKey_LeftArrow, true))  dx -= 1;
+                        if (ImGui::IsKeyPressed(ImGuiKey_RightArrow, true)) dx += 1;
+                        if (ImGui::IsKeyPressed(ImGuiKey_UpArrow, true))    dy -= 1;
+                        if (ImGui::IsKeyPressed(ImGuiKey_DownArrow, true))  dy += 1;
+                        if (dx != 0 || dy != 0) {
+                            const int min_x = -g_ed.doc.buffer;
+                            const int min_y = -g_ed.doc.buffer;
+                            const int max_x = g_ed.doc.width + g_ed.doc.buffer - g_ed.clipboard.w;
+                            const int max_y = g_ed.doc.height + g_ed.doc.buffer - g_ed.clipboard.h;
+                            g_ed.paste_pos.x = std::clamp(g_ed.paste_pos.x + dx, min_x, std::max(min_x, max_x));
+                            g_ed.paste_pos.y = std::clamp(g_ed.paste_pos.y + dy, min_y, std::max(min_y, max_y));
+                            g_ed.selection.x = g_ed.paste_pos.x;
+                            g_ed.selection.y = g_ed.paste_pos.y;
+                            g_ed.doc.set_clip_rect(&g_ed.selection, TilemapDoc::ClipShape::Rect);
+                        }
+                    }
+                } else {
+                    if (ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+                        cancel_or_deselect();
+                    }
+                    if (g_ed.selection_lifted && (ImGui::IsKeyPressed(ImGuiKey_Enter) || ImGui::IsKeyPressed(ImGuiKey_KeypadEnter))) {
+                        apply_moved_selection();
+                    }
+                    if ((ImGui::IsKeyPressed(ImGuiKey_Delete) || ImGui::IsKeyPressed(ImGuiKey_Backspace)) && g_ed.has_selection) {
+                        delete_selection();
+                    }
+                    if (g_ed.has_selection && !g_ed.is_moving_selection) {
+                        int dx = 0;
+                        int dy = 0;
+                        if (ImGui::IsKeyPressed(ImGuiKey_LeftArrow, true))  dx -= 1;
+                        if (ImGui::IsKeyPressed(ImGuiKey_RightArrow, true)) dx += 1;
+                        if (ImGui::IsKeyPressed(ImGuiKey_UpArrow, true))    dy -= 1;
+                        if (ImGui::IsKeyPressed(ImGuiKey_DownArrow, true))  dy += 1;
+                        if (dx != 0 || dy != 0) {
+                            const int min_x = -g_ed.doc.buffer;
+                            const int min_y = -g_ed.doc.buffer;
+                            const int max_x = g_ed.doc.width + g_ed.doc.buffer - g_ed.selection.w;
+                            const int max_y = g_ed.doc.height + g_ed.doc.buffer - g_ed.selection.h;
+                            const int target_x = std::clamp(g_ed.selection.x + dx, min_x, std::max(min_x, max_x));
+                            const int target_y = std::clamp(g_ed.selection.y + dy, min_y, std::max(min_y, max_y));
+                            if (target_x != g_ed.selection.x || target_y != g_ed.selection.y) {
+                                if (!g_ed.selection_lifted) {
+                                    g_ed.selection_origin = g_ed.selection;
+                                    if (g_ed.selection_is_circle) {
+                                        g_ed.floating_clip = g_ed.doc.copy_ellipse(g_ed.selection);
+                                        g_ed.doc.begin_stroke("Move Selection");
+                                        g_ed.doc.erase_ellipse(g_ed.selection);
+                                    } else {
+                                        g_ed.floating_clip = g_ed.doc.copy_rect(g_ed.selection);
+                                        g_ed.doc.begin_stroke("Move Selection");
+                                        g_ed.doc.erase_rect(g_ed.selection);
+                                    }
+                                    g_ed.selection_lifted = true;
                                 }
-                                g_ed.selection_lifted = true;
+                                g_ed.selection.x = target_x;
+                                g_ed.selection.y = target_y;
+                                g_ed.doc.set_clip_rect(&g_ed.selection, g_ed.selection_is_circle ? TilemapDoc::ClipShape::Ellipse : TilemapDoc::ClipShape::Rect);
+                                g_ed.status_msg = "Moved selection (floating). Press Ctrl+D or right-click to apply.";
                             }
-                            g_ed.selection.x = target_x;
-                            g_ed.selection.y = target_y;
-                            g_ed.doc.set_clip_rect(&g_ed.selection, g_ed.selection_is_circle ? TilemapDoc::ClipShape::Ellipse : TilemapDoc::ClipShape::Rect);
-                            g_ed.status_msg = "Moved selection (floating). Press Ctrl+D or right-click to apply.";
                         }
                     }
                 }
-            }
 
-            if (!cmd) {
-                if (ImGui::IsKeyPressed(ImGuiKey_1)) g_ed.tool = Tool::Paint;
-                if (ImGui::IsKeyPressed(ImGuiKey_2)) g_ed.tool = Tool::Erase;
-                if (ImGui::IsKeyPressed(ImGuiKey_3)) g_ed.tool = Tool::Line;
-                if (ImGui::IsKeyPressed(ImGuiKey_4)) g_ed.tool = Tool::Rect;
-                if (ImGui::IsKeyPressed(ImGuiKey_5)) g_ed.tool = Tool::Fill;
-                if (ImGui::IsKeyPressed(ImGuiKey_6)) g_ed.tool = Tool::Select;
-                if (ImGui::IsKeyPressed(ImGuiKey_7)) g_ed.tool = Tool::Eyedropper;
+                if (!cmd) {
+                    if (ImGui::IsKeyPressed(ImGuiKey_1)) g_ed.tool = Tool::Paint;
+                    if (ImGui::IsKeyPressed(ImGuiKey_2)) g_ed.tool = Tool::Erase;
+                    if (ImGui::IsKeyPressed(ImGuiKey_3)) g_ed.tool = Tool::Line;
+                    if (ImGui::IsKeyPressed(ImGuiKey_4)) g_ed.tool = Tool::Rect;
+                    if (ImGui::IsKeyPressed(ImGuiKey_5)) g_ed.tool = Tool::Fill;
+                    if (ImGui::IsKeyPressed(ImGuiKey_6)) g_ed.tool = Tool::Select;
+                    if (ImGui::IsKeyPressed(ImGuiKey_7)) g_ed.tool = Tool::Eyedropper;
+                }
+            }
+        } else {
+            // Tileset Maker View shortcuts
+            g_ed.tileset_editor.handle_shortcuts(io);
+            if (!io.WantTextInput) {
+                const bool cmd = io.KeyCtrl || io.KeySuper;
+                if (cmd && ImGui::IsKeyPressed(ImGuiKey_S)) {
+                    if (io.KeyShift) g_ed.tileset_editor.save_project(true);
+                    else g_ed.tileset_editor.save_project(false);
+                }
+                if (cmd && ImGui::IsKeyPressed(ImGuiKey_O)) {
+                    g_ed.tileset_editor.try_open_project_dialog();
+                }
+                if (cmd && ImGui::IsKeyPressed(ImGuiKey_N)) {
+                    g_ed.tileset_editor.ui.show_new = true;
+                    g_ed.tileset_editor.ui.new_focus_name = true;
+                }
+                if (cmd && ImGui::IsKeyPressed(ImGuiKey_E)) {
+                    g_ed.tileset_editor.export_all();
+                }
             }
         }
 
         // Main Menu Bar
         if (ImGui::BeginMainMenuBar()) {
-            if (ImGui::BeginMenu("File")) {
-                if (ImGui::MenuItem("New Map...", "Ctrl+N")) {
-                    g_ed.show_new_modal = true;
+            if (g_ed.current_view == AppView::Tilemap) {
+                if (ImGui::BeginMenu("File")) {
+                    if (ImGui::MenuItem("New Map...", "Ctrl+N")) {
+                        g_ed.show_new_modal = true;
+                    }
+                    if (ImGui::MenuItem("Open Map...", "Ctrl+O")) {
+                        open_map_dialog(renderer);
+                    }
+                    if (ImGui::MenuItem("Save Map", "Ctrl+S")) {
+                        save_map_dialog();
+                    }
+                    if (ImGui::MenuItem("Import Tileset...", "Ctrl+I")) {
+                        open_tileset_dialog(renderer);
+                    }
+                    if (ImGui::MenuItem("Edit in Tileset Maker...", "F2")) {
+                        switch_to_view(AppView::TilesetMaker, renderer);
+                    }
+                    ImGui::Separator();
+                    if (ImGui::MenuItem("Export", "Ctrl+E")) {
+                        execute_export();
+                    }
+                    ImGui::Separator();
+                    if (ImGui::MenuItem("Quit", "Cmd+Q")) {
+                        running = false;
+                    }
+                    ImGui::EndMenu();
                 }
-                if (ImGui::MenuItem("Open Map...", "Ctrl+O")) {
-                    open_map_dialog(renderer);
+                if (ImGui::BeginMenu("Edit")) {
+                    if (ImGui::MenuItem("Undo", "Ctrl+Z", false, g_ed.selection_lifted || g_ed.doc.can_undo())) {
+                        if (g_ed.selection_lifted) cancel_or_deselect();
+                        else g_ed.doc.undo();
+                    }
+                    if (ImGui::MenuItem("Redo", "Ctrl+Y", false, !g_ed.selection_lifted && g_ed.doc.can_redo())) {
+                        g_ed.doc.redo();
+                    }
+                    ImGui::Separator();
+                    if (ImGui::MenuItem("Cut", "Ctrl+X", false, g_ed.has_selection && !g_ed.paste_mode)) {
+                        cut_selection();
+                    }
+                    if (ImGui::MenuItem("Copy", "Ctrl+C", false, g_ed.has_selection && !g_ed.paste_mode)) {
+                        copy_selection();
+                    }
+                    if (ImGui::MenuItem("Paste", "Ctrl+V", false, !g_ed.clipboard.is_empty())) {
+                        start_paste();
+                    }
+                    if (ImGui::MenuItem("Clear Selection", "Del", false, g_ed.has_selection && !g_ed.paste_mode)) {
+                        delete_selection();
+                    }
+                    if (ImGui::MenuItem("Deselect", "Ctrl+D", false, g_ed.has_selection || g_ed.paste_mode)) {
+                        deselect();
+                    }
+                    ImGui::Separator();
+                    if (ImGui::MenuItem("Resize Canvas...")) {
+                        g_ed.resize_w = g_ed.doc.width_8px();
+                        g_ed.resize_h = g_ed.doc.height_8px();
+                        g_ed.show_resize_modal = true;
+                    }
+                    ImGui::EndMenu();
                 }
-                if (ImGui::MenuItem("Save Map", "Ctrl+S")) {
-                    save_map_dialog();
+                if (ImGui::BeginMenu("View")) {
+                    if (ImGui::MenuItem("Map Editor", "F1", true)) {
+                        switch_to_view(AppView::Tilemap, renderer);
+                    }
+                    if (ImGui::MenuItem("Tileset Maker", "F2", false)) {
+                        switch_to_view(AppView::TilesetMaker, renderer);
+                    }
+                    ImGui::Separator();
+                    if (ImGui::MenuItem("Grid Lines", nullptr, g_ed.settings.grid_lines)) {
+                        g_ed.settings.grid_lines = !g_ed.settings.grid_lines;
+                        persist_settings();
+                    }
+                    if (ImGui::MenuItem("Collision Overlay", nullptr, g_ed.settings.collision_overlay)) {
+                        g_ed.settings.collision_overlay = !g_ed.settings.collision_overlay;
+                        persist_settings();
+                    }
+                    ImGui::Separator();
+                    if (ImGui::MenuItem("Dark Theme", nullptr, g_ed.settings.dark)) {
+                        g_ed.settings.dark = true;
+                        apply_app_theme(true);
+                        persist_settings();
+                    }
+                    if (ImGui::MenuItem("Light Theme", nullptr, !g_ed.settings.dark)) {
+                        g_ed.settings.dark = false;
+                        apply_app_theme(false);
+                        persist_settings();
+                    }
+                    ImGui::Separator();
+                    if (ImGui::MenuItem("Reset Zoom", "100%")) {
+                        g_ed.zoom = 1.0f;
+                        persist_settings();
+                    }
+                    if (ImGui::MenuItem("Fit Map in View")) {
+                        g_ed.zoom = 2.0f;
+                        g_ed.pan = ImVec2(60, 40);
+                        persist_settings();
+                    }
+                    ImGui::EndMenu();
                 }
-                if (ImGui::MenuItem("Import Tileset...", "Ctrl+I")) {
-                    open_tileset_dialog(renderer);
+            } else {
+                if (ImGui::BeginMenu("File")) {
+                    if (ImGui::MenuItem("Apply & Return to Map", "F1")) {
+                        switch_to_view(AppView::Tilemap, renderer);
+                    }
+                    ImGui::Separator();
+                    if (ImGui::MenuItem("New Project...", "Ctrl+N")) {
+                        g_ed.tileset_editor.ui.show_new = true;
+                        g_ed.tileset_editor.ui.new_focus_name = true;
+                    }
+                    if (ImGui::MenuItem("Open Project...", "Ctrl+O")) {
+                        g_ed.tileset_editor.try_open_project_dialog();
+                    }
+                    if (ImGui::MenuItem("Save Project", "Ctrl+S")) {
+                        g_ed.tileset_editor.save_project();
+                    }
+                    if (ImGui::MenuItem("Save Project As...", "Shift+Ctrl+S")) {
+                        g_ed.tileset_editor.save_project(true);
+                    }
+                    ImGui::Separator();
+                    if (ImGui::MenuItem("Import 12x4 Tileset...")) {
+                        g_ed.tileset_editor.try_import_12x4_dialog();
+                    }
+                    if (ImGui::MenuItem("Import 5x3 Tileset...")) {
+                        g_ed.tileset_editor.try_import_5x3_dialog();
+                    }
+                    ImGui::Separator();
+                    if (ImGui::MenuItem("Export All...", "Ctrl+E")) {
+                        g_ed.tileset_editor.export_all();
+                    }
+                    ImGui::Separator();
+                    if (ImGui::MenuItem("Quit", "Cmd+Q")) {
+                        running = false;
+                    }
+                    ImGui::EndMenu();
                 }
-                ImGui::Separator();
-                if (ImGui::MenuItem("Export", "Ctrl+E")) {
-                    execute_export();
+                if (ImGui::BeginMenu("Edit")) {
+                    if (ImGui::MenuItem("Undo", "Ctrl+Z")) {
+                        if (g_ed.tileset_editor.floating) g_ed.tileset_editor.cancel_floating();
+                        else g_ed.tileset_editor.do_undo();
+                    }
+                    ImGui::Separator();
+                    if (ImGui::MenuItem("Cut", "Ctrl+X", false, g_ed.tileset_editor.has_selection())) {
+                        g_ed.tileset_editor.start_selection_move();
+                    }
+                    if (ImGui::MenuItem("Copy", "Ctrl+C", false, g_ed.tileset_editor.has_selection())) {
+                        g_ed.tileset_editor.copy_selection();
+                    }
+                    if (ImGui::MenuItem("Paste", "Ctrl+V", false, g_ed.tileset_editor.clipboard.valid())) {
+                        g_ed.tileset_editor.start_paste();
+                    }
+                    if (ImGui::MenuItem("Clear Selection", "Del", false, g_ed.tileset_editor.has_selection())) {
+                        g_ed.tileset_editor.clear_selection();
+                    }
+                    if (ImGui::MenuItem("Deselect", "Ctrl+D", false, g_ed.tileset_editor.has_selection())) {
+                        g_ed.tileset_editor.clear_selection();
+                    }
+                    ImGui::EndMenu();
                 }
-                ImGui::Separator();
-                if (ImGui::MenuItem("Quit", "Cmd+Q")) {
-                    running = false;
+                if (ImGui::BeginMenu("View")) {
+                    if (ImGui::MenuItem("Map Editor", "F1", false)) {
+                        switch_to_view(AppView::Tilemap, renderer);
+                    }
+                    if (ImGui::MenuItem("Tileset Maker", "F2", true)) {
+                        switch_to_view(AppView::TilesetMaker, renderer);
+                    }
+                    ImGui::Separator();
+                    if (ImGui::MenuItem("Pixel Grid", nullptr, g_ed.tileset_editor.settings.pixel_grid)) {
+                        g_ed.tileset_editor.settings.pixel_grid = !g_ed.tileset_editor.settings.pixel_grid;
+                    }
+                    ImGui::Separator();
+                    if (ImGui::MenuItem("Dark Theme", nullptr, g_ed.settings.dark)) {
+                        g_ed.settings.dark = true;
+                        apply_app_theme(true);
+                        persist_settings();
+                    }
+                    if (ImGui::MenuItem("Light Theme", nullptr, !g_ed.settings.dark)) {
+                        g_ed.settings.dark = false;
+                        apply_app_theme(false);
+                        persist_settings();
+                    }
+                    ImGui::EndMenu();
                 }
-                ImGui::EndMenu();
-            }
-            if (ImGui::BeginMenu("Edit")) {
-                if (ImGui::MenuItem("Undo", "Ctrl+Z", false, g_ed.selection_lifted || g_ed.doc.can_undo())) {
-                    if (g_ed.selection_lifted) cancel_or_deselect();
-                    else g_ed.doc.undo();
-                }
-                if (ImGui::MenuItem("Redo", "Ctrl+Y", false, !g_ed.selection_lifted && g_ed.doc.can_redo())) {
-                    g_ed.doc.redo();
-                }
-                ImGui::Separator();
-                if (ImGui::MenuItem("Cut", "Ctrl+X", false, g_ed.has_selection && !g_ed.paste_mode)) {
-                    cut_selection();
-                }
-                if (ImGui::MenuItem("Copy", "Ctrl+C", false, g_ed.has_selection && !g_ed.paste_mode)) {
-                    copy_selection();
-                }
-                if (ImGui::MenuItem("Paste", "Ctrl+V", false, !g_ed.clipboard.is_empty())) {
-                    start_paste();
-                }
-                if (ImGui::MenuItem("Clear Selection", "Del", false, g_ed.has_selection && !g_ed.paste_mode)) {
-                    delete_selection();
-                }
-                if (ImGui::MenuItem("Deselect", "Ctrl+D", false, g_ed.has_selection || g_ed.paste_mode)) {
-                    deselect();
-                }
-                ImGui::Separator();
-                if (ImGui::MenuItem("Resize Canvas...")) {
-                    g_ed.resize_w = g_ed.doc.width_8px();
-                    g_ed.resize_h = g_ed.doc.height_8px();
-                    g_ed.show_resize_modal = true;
-                }
-                ImGui::EndMenu();
-            }
-            if (ImGui::BeginMenu("View")) {
-                if (ImGui::MenuItem("Grid Lines", nullptr, g_ed.settings.grid_lines)) {
-                    g_ed.settings.grid_lines = !g_ed.settings.grid_lines;
-                    persist_settings();
-                }
-                if (ImGui::MenuItem("Collision Overlay", nullptr, g_ed.settings.collision_overlay)) {
-                    g_ed.settings.collision_overlay = !g_ed.settings.collision_overlay;
-                    persist_settings();
-                }
-                ImGui::Separator();
-                if (ImGui::MenuItem("Dark Theme", nullptr, g_ed.settings.dark)) {
-                    g_ed.settings.dark = true;
-                    apply_theme(true);
-                    persist_settings();
-                }
-                if (ImGui::MenuItem("Light Theme", nullptr, !g_ed.settings.dark)) {
-                    g_ed.settings.dark = false;
-                    apply_theme(false);
-                    persist_settings();
-                }
-                ImGui::Separator();
-                if (ImGui::MenuItem("Reset Zoom", "100%")) {
-                    g_ed.zoom = 1.0f;
-                    persist_settings();
-                }
-                if (ImGui::MenuItem("Fit Map in View")) {
-                    g_ed.zoom = 2.0f;
-                    g_ed.pan = ImVec2(60, 40);
-                    persist_settings();
-                }
-                ImGui::EndMenu();
             }
             ImGui::EndMainMenuBar();
         }
@@ -2916,87 +3148,107 @@ int run_editor() {
                      ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoSavedSettings);
 
         // 1. Top row: Mode switcher, view toggles, zoom
-        draw_top_nav_and_view_row();
+        draw_top_nav_and_view_row(renderer);
         ImGui::Separator();
 
-        // 2. Second row: All tools
-        draw_tool_selection_row();
-        ImGui::Separator();
+        if (g_ed.current_view == AppView::Tilemap) {
+            // 2. Second row: All tools
+            draw_tool_selection_row();
+            ImGui::Separator();
 
-        // 3. Third row: Contextual tool options
-        draw_tool_options_row();
-        ImGui::Separator();
+            // 3. Third row: Contextual tool options
+            draw_tool_options_row();
+            ImGui::Separator();
 
-        // 4. Body: Left Canvas & Right Sidebar
-        const float splitter_w = 6.0f;
-        const float status_bar_h = 24.0f;
-        const float avail_w = ImGui::GetContentRegionAvail().x;
-        const float avail_h = ImGui::GetContentRegionAvail().y - status_bar_h;
+            // 4. Body: Left Canvas & Right Sidebar
+            const float splitter_w = 6.0f;
+            const float status_bar_h = 24.0f;
+            const float avail_w = ImGui::GetContentRegionAvail().x;
+            const float avail_h = ImGui::GetContentRegionAvail().y - status_bar_h;
 
-        const float min_sidebar = 300.0f;
-        const float min_canvas = 300.0f;
-        g_ed.sidebar_w = std::clamp(g_ed.sidebar_w, min_sidebar, std::max(min_sidebar, avail_w - min_canvas - splitter_w));
-        const float canvas_w = std::max(min_canvas, avail_w - g_ed.sidebar_w - splitter_w);
+            const float min_sidebar = 300.0f;
+            const float min_canvas = 300.0f;
+            g_ed.sidebar_w = std::clamp(g_ed.sidebar_w, min_sidebar, std::max(min_sidebar, avail_w - min_canvas - splitter_w));
+            const float canvas_w = std::max(min_canvas, avail_w - g_ed.sidebar_w - splitter_w);
 
-        // Canvas Panel
-        ImGui::BeginChild("CanvasChildPanel", ImVec2(canvas_w, avail_h), ImGuiChildFlags_Borders,
-                          ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
-        draw_canvas_viewport_content();
-        ImGui::EndChild();
+            // Canvas Panel
+            ImGui::BeginChild("CanvasChildPanel", ImVec2(canvas_w, avail_h), ImGuiChildFlags_Borders,
+                              ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+            draw_canvas_viewport_content();
+            ImGui::EndChild();
 
-        // Splitter
-        ImGui::SameLine(0, 0);
-        ImGui::InvisibleButton("vsplit", ImVec2(splitter_w, avail_h));
-        if (ImGui::IsItemActive()) {
-            g_ed.sidebar_w -= io.MouseDelta.x;
-            g_ed.settings.sidebar_w = g_ed.sidebar_w;
-        }
-        if (ImGui::IsItemDeactivated()) {
-            persist_settings();
-        }
-        if (ImGui::IsItemHovered() || ImGui::IsItemActive()) {
-            ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
-        }
-        const ImU32 split_col = g_ed.settings.dark ? IM_COL32(50, 54, 62, 255) : IM_COL32(195, 200, 210, 255);
-        ImGui::GetWindowDrawList()->AddRectFilled(ImGui::GetItemRectMin(), ImGui::GetItemRectMax(), split_col);
+            // Splitter
+            ImGui::SameLine(0, 0);
+            ImGui::InvisibleButton("vsplit", ImVec2(splitter_w, avail_h));
+            if (ImGui::IsItemActive()) {
+                g_ed.sidebar_w -= io.MouseDelta.x;
+                g_ed.settings.sidebar_w = g_ed.sidebar_w;
+            }
+            if (ImGui::IsItemDeactivated()) {
+                persist_settings();
+            }
+            if (ImGui::IsItemHovered() || ImGui::IsItemActive()) {
+                ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
+            }
+            const ImU32 split_col = g_ed.settings.dark ? IM_COL32(50, 54, 62, 255) : IM_COL32(195, 200, 210, 255);
+            ImGui::GetWindowDrawList()->AddRectFilled(ImGui::GetItemRectMin(), ImGui::GetItemRectMax(), split_col);
 
-        // Sidebar Panel
-        ImGui::SameLine(0, 0);
-        ImGui::BeginChild("SidebarChildPanel", ImVec2(g_ed.sidebar_w, avail_h), true, ImGuiWindowFlags_AlwaysVerticalScrollbar);
-        draw_sidebar_content(renderer);
-        ImGui::EndChild();
+            // Sidebar Panel
+            ImGui::SameLine(0, 0);
+            ImGui::BeginChild("SidebarChildPanel", ImVec2(g_ed.sidebar_w, avail_h), true, ImGuiWindowFlags_AlwaysVerticalScrollbar);
+            draw_sidebar_content(renderer);
+            ImGui::EndChild();
 
-        // 3. Status bar at bottom
-        ImGui::Separator();
-        ImGui::Text("%s", g_ed.status_msg.c_str());
-        ImGui::SameLine(ImGui::GetWindowWidth() - 360);
-        if (g_ed.doc.in_bounds(g_ed.hovered_cell.x, g_ed.hovered_cell.y)) {
-            if (g_ed.doc.in_active_bounds(g_ed.hovered_cell.x, g_ed.hovered_cell.y)) {
-                ImGui::Text("Cell: (%d, %d) | Map: %dx%d - %dx%d px", g_ed.hovered_cell.x, g_ed.hovered_cell.y,
-                            g_ed.doc.width_8px(), g_ed.doc.height_8px(),
-                            g_ed.doc.pixel_width(), g_ed.doc.pixel_height());
+            // 5. Status bar at bottom
+            ImGui::Separator();
+            ImGui::Text("%s", g_ed.status_msg.c_str());
+            ImGui::SameLine(ImGui::GetWindowWidth() - 360);
+            if (g_ed.doc.in_bounds(g_ed.hovered_cell.x, g_ed.hovered_cell.y)) {
+                if (g_ed.doc.in_active_bounds(g_ed.hovered_cell.x, g_ed.hovered_cell.y)) {
+                    ImGui::Text("Cell: (%d, %d) | Map: %dx%d - %dx%d px", g_ed.hovered_cell.x, g_ed.hovered_cell.y,
+                                g_ed.doc.width_8px(), g_ed.doc.height_8px(),
+                                g_ed.doc.pixel_width(), g_ed.doc.pixel_height());
+                } else {
+                    ImGui::Text("Cell: (%d, %d) [Outside Buffer] | Map: %dx%d - %dx%d px", g_ed.hovered_cell.x, g_ed.hovered_cell.y,
+                                g_ed.doc.width_8px(), g_ed.doc.height_8px(),
+                                g_ed.doc.pixel_width(), g_ed.doc.pixel_height());
+                }
             } else {
-                ImGui::Text("Cell: (%d, %d) [Outside Buffer] | Map: %dx%d - %dx%d px", g_ed.hovered_cell.x, g_ed.hovered_cell.y,
+                ImGui::Text("Map: %dx%d - %dx%d px",
                             g_ed.doc.width_8px(), g_ed.doc.height_8px(),
                             g_ed.doc.pixel_width(), g_ed.doc.pixel_height());
             }
         } else {
-            ImGui::Text("Map: %dx%d - %dx%d px",
-                        g_ed.doc.width_8px(), g_ed.doc.height_8px(),
-                        g_ed.doc.pixel_width(), g_ed.doc.pixel_height());
+            // Tileset Maker View
+            const float status_bar_h = 24.0f;
+            const float avail_h = ImGui::GetContentRegionAvail().y - status_bar_h;
+            g_ed.tileset_editor.draw_content(renderer, window, avail_h);
+
+            // Check if return was requested from inside TilesetEditor
+            if (g_ed.tileset_editor.request_return_to_map) {
+                g_ed.tileset_editor.request_return_to_map = false;
+                switch_to_view(AppView::Tilemap, renderer);
+            }
+
+            // Status bar at bottom
+            ImGui::Separator();
+            ImGui::Text("%s", g_ed.tileset_editor.status.c_str());
+            ImGui::SameLine(ImGui::GetWindowWidth() - 360);
+            ImGui::Text("Tileset: %s (%dpx)", g_ed.tileset_editor.project_name, g_ed.tileset_editor.doc.tile_size);
         }
 
         ImGui::End(); // MainLayout##Window
 
-        draw_modals();
+        if (g_ed.current_view == AppView::Tilemap) {
+            draw_modals();
+        } else {
+            g_ed.tileset_editor.draw_modals(running);
+        }
 
         // Render Frame
         ImGui::Render();
-        if (g_ed.settings.dark) {
-            SDL_SetRenderDrawColor(renderer, 24, 26, 30, 255);
-        } else {
-            SDL_SetRenderDrawColor(renderer, 235, 237, 242, 255);
-        }
+        const Rgb bg = background_clear_color(g_ed.settings.dark);
+        SDL_SetRenderDrawColor(renderer, bg.r, bg.g, bg.b, 255);
         SDL_RenderClear(renderer);
         ImGui_ImplSDLRenderer3_RenderDrawData(ImGui::GetDrawData(), renderer);
         SDL_RenderPresent(renderer);

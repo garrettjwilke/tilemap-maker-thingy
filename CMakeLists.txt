@@ -47,18 +47,53 @@ add_library(imgui STATIC
 target_include_directories(imgui PUBLIC deps/imgui deps/imgui/backends)
 target_link_libraries(imgui PUBLIC SDL3::SDL3)
 
+add_library(tileset_core STATIC
+    deps/tileset-maker-thingy/src/core/md_color.cpp
+    deps/tileset-maker-thingy/src/core/tileset_doc.cpp
+    deps/tileset-maker-thingy/src/core/atlas_doc.cpp
+    deps/tileset-maker-thingy/src/core/convert.cpp
+    deps/tileset-maker-thingy/src/core/io.cpp
+    deps/tileset-maker-thingy/src/core/palette_presets.cpp
+    deps/tileset-maker-thingy/src/core/draw.cpp
+    deps/tileset-maker-thingy/src/core/project.cpp
+)
+target_include_directories(tileset_core PUBLIC
+    deps/tileset-maker-thingy/src
+    deps/tileset-maker-thingy/src/core
+    deps/gentileset
+)
+target_link_libraries(tileset_core PUBLIC gentileset)
+
 add_executable(tilemap-maker-tests
     tests/test_main.cpp
     src/app/settings.cpp
+    src/app/theme.cpp
+    deps/tileset-maker-thingy/src/app/tileset_editor.cpp
+    deps/tileset-maker-thingy/src/app/settings.cpp
 )
-target_link_libraries(tilemap-maker-tests PRIVATE tilemap_core)
+target_include_directories(tilemap-maker-tests PRIVATE
+    src
+    src/core
+    deps/tileset-maker-thingy/src
+    deps/tileset-maker-thingy/src/app
+)
+target_link_libraries(tilemap-maker-tests PRIVATE tilemap_core tileset_core imgui nfd SDL3::SDL3)
 
 add_executable(tilemap-maker
     src/app/main.cpp
     src/app/editor.cpp
     src/app/settings.cpp
+    src/app/theme.cpp
+    deps/tileset-maker-thingy/src/app/tileset_editor.cpp
+    deps/tileset-maker-thingy/src/app/settings.cpp
 )
-target_link_libraries(tilemap-maker PRIVATE tilemap_core imgui nfd SDL3::SDL3)
+target_include_directories(tilemap-maker PRIVATE
+    src
+    src/core
+    deps/tileset-maker-thingy/src
+    deps/tileset-maker-thingy/src/app
+)
+target_link_libraries(tilemap-maker PRIVATE tilemap_core tileset_core imgui nfd SDL3::SDL3)
 
 enable_testing()
 add_test(NAME tilemap-maker-self-test COMMAND tilemap-maker-tests)
