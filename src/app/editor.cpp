@@ -3290,7 +3290,8 @@ int run_editor() {
         ImGui::SetNextWindowSize(vp->WorkSize);
         ImGui::Begin("MainLayout##Window", nullptr,
                      ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize |
-                     ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoSavedSettings);
+                     ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoSavedSettings |
+                     ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
 
         // 1. Top row: Mode switcher, view toggles, zoom
         draw_top_nav_and_view_row(renderer);
@@ -3307,9 +3308,9 @@ int run_editor() {
 
             // 4. Body: Left Canvas & Right Sidebar
             const float splitter_w = 6.0f * g_ed.settings.scale;
-            const float status_bar_h = 24.0f * g_ed.settings.scale;
+            const float status_bar_h = std::max(24.0f * g_ed.settings.scale, ImGui::GetFrameHeightWithSpacing() + ImGui::GetStyle().ItemSpacing.y + 2.0f);
             const float avail_w = ImGui::GetContentRegionAvail().x;
-            const float avail_h = ImGui::GetContentRegionAvail().y - status_bar_h;
+            const float avail_h = std::max(100.0f, ImGui::GetContentRegionAvail().y - status_bar_h);
 
             const float min_sidebar = 300.0f * g_ed.settings.scale;
             const float min_canvas = 200.0f * g_ed.settings.scale;
@@ -3368,8 +3369,8 @@ int run_editor() {
             }
         } else {
             // Tileset Maker View
-            const float status_bar_h = 24.0f * g_ed.settings.scale;
-            const float avail_h = ImGui::GetContentRegionAvail().y - status_bar_h;
+            const float status_bar_h = std::max(24.0f * g_ed.settings.scale, ImGui::GetFrameHeightWithSpacing() + ImGui::GetStyle().ItemSpacing.y + 2.0f);
+            const float avail_h = std::max(100.0f, ImGui::GetContentRegionAvail().y - status_bar_h);
             g_ed.tileset_editor.draw_content(renderer, window, avail_h);
 
             // Check if return was requested from inside TilesetEditor

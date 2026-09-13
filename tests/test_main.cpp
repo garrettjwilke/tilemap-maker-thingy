@@ -1595,6 +1595,48 @@ void test_tileset_maker_integration() {
         std::remove(terr_file.c_str());
     }
 
+    // 5. Embedded TilesetMaker UI autosizing to fit available height without overflow
+    {
+        tsm::TilesetEditor ed;
+        ed.embedded = true;
+        ed.reset_new("autosize_test", 16);
+
+        ImGuiIO& io = ImGui::GetIO();
+        io.DisplaySize = ImVec2(1000.0f, 700.0f);
+        unsigned char* font_pixels = nullptr;
+        int font_w = 0, font_h = 0;
+        io.Fonts->GetTexDataAsRGBA32(&font_pixels, &font_w, &font_h);
+        ImGui::NewFrame();
+
+        ImGui::SetNextWindowPos(ImVec2(0, 0));
+        ImGui::SetNextWindowSize(ImVec2(1000.0f, 700.0f));
+        ImGui::Begin("TestFitWindow", nullptr, ImGuiWindowFlags_NoScrollbar);
+
+        const float target_avail_h = 550.0f;
+        const float cursor_before = ImGui::GetCursorPosY();
+        ed.draw_content(nullptr, nullptr, target_avail_h);
+        const float cursor_after = ImGui::GetCursorPosY();
+        const float total_drawn_h = cursor_after - cursor_before;
+
+        // Total drawn height should match target_avail_h within 4px (no overflow!)
+        expect(std::abs(total_drawn_h - target_avail_h) <= 4.0f, "draw_content height respects avail_height without overflow");
+        expect(ed.zoom >= 1, "tileset editor zoom is positive and fits");
+
+        // Verify zoom adjusts when smaller height is given
+        const int zoom_large = ed.zoom;
+        ImGui::End();
+        ImGui::Render();
+
+        ImGui::NewFrame();
+        ImGui::SetNextWindowPos(ImVec2(0, 0));
+        ImGui::SetNextWindowSize(ImVec2(800.0f, 400.0f));
+        ImGui::Begin("TestFitSmall", nullptr, ImGuiWindowFlags_NoScrollbar);
+        ed.draw_content(nullptr, nullptr, 250.0f);
+        expect(ed.zoom < zoom_large, "tileset editor zoom scales down to fit smaller height");
+        ImGui::End();
+        ImGui::Render();
+    }
+
     ImGui::DestroyContext(ctx);
 }
 
