@@ -933,9 +933,9 @@ static void draw_tool_selection_row() {
     };
 
     tool_button("Pencil", Tool::Paint, "1", "Freehand drawing tool");
-    tool_button("Line", Tool::Line, "2", "Straight line drawing tool");
-    tool_button("Eraser", Tool::Erase, "3", "Eraser tool");
-    tool_button("Rectangle", Tool::Rect, "4", "Rectangle / Box tool");
+    tool_button("Eraser", Tool::Erase, "2", "Eraser tool");
+    tool_button("Line", Tool::Line, "3", "Straight line drawing tool");
+    tool_button("Square", Tool::Rect, "4", "Square / Circle tool");
     tool_button("Fill", Tool::Fill, "5", "Flood fill contiguous tiles");
     tool_button("Select", Tool::Select, "6", "Rectangular selection & move tool");
     tool_button("Eyedropper", Tool::Eyedropper, "7", "Pick tile from map into stamp");
@@ -1096,7 +1096,7 @@ static void draw_tool_options_row() {
             break;
         }
         case Tool::Rect: {
-            ImGui::TextColored(ImVec4(0.4f, 0.75f, 1.0f, 1.0f), "RECTANGLE OPTIONS:");
+            ImGui::TextColored(ImVec4(0.4f, 0.75f, 1.0f, 1.0f), "SQUARE OPTIONS:");
             ImGui::SameLine();
             ImGui::Checkbox("Circle Mode##RectCircle", &g_ed.rect_circle);
             ImGui::SameLine();
@@ -2579,8 +2579,8 @@ int run_editor() {
 
             if (g_ed.view_mode == EditorViewMode::Tilemap && !cmd) {
                 if (ImGui::IsKeyPressed(ImGuiKey_1)) g_ed.tool = Tool::Paint;
-                if (ImGui::IsKeyPressed(ImGuiKey_2)) g_ed.tool = Tool::Line;
-                if (ImGui::IsKeyPressed(ImGuiKey_3)) g_ed.tool = Tool::Erase;
+                if (ImGui::IsKeyPressed(ImGuiKey_2)) g_ed.tool = Tool::Erase;
+                if (ImGui::IsKeyPressed(ImGuiKey_3)) g_ed.tool = Tool::Line;
                 if (ImGui::IsKeyPressed(ImGuiKey_4)) g_ed.tool = Tool::Rect;
                 if (ImGui::IsKeyPressed(ImGuiKey_5)) g_ed.tool = Tool::Fill;
                 if (ImGui::IsKeyPressed(ImGuiKey_6)) g_ed.tool = Tool::Select;

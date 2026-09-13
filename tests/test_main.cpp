@@ -4,8 +4,10 @@
 #include "core/tileset.h"
 #include "core/types.h"
 #include "app/settings.h"
+#include "gentileset.h"
 
 #include <cmath>
+#include <cstring>
 #include <cstdlib>
 #include <fstream>
 #include <iostream>
@@ -28,6 +30,27 @@ std::string temp_path(const char* name) {
         dir = "/tmp";
     }
     return std::string(dir) + "/" + name;
+}
+
+bool create_dummy_tileset_png(const std::string& path, int tile_size, int cols = 13, int rows = 4) {
+    Image im{};
+    Image like{};
+    like.bpp = 1;
+    like.indexed = 1;
+    like.palettesize = 16;
+    for (int i = 0; i < 16; ++i) {
+        like.palette[i][0] = static_cast<unsigned char>(i * 16);
+        like.palette[i][1] = static_cast<unsigned char>(i * 16);
+        like.palette[i][2] = static_cast<unsigned char>(i * 16);
+        like.palette[i][3] = 255;
+    }
+    const unsigned w = static_cast<unsigned>(cols * tile_size);
+    const unsigned h = static_cast<unsigned>(rows * tile_size);
+    if (!image_alloc(&im, w, h, &like)) return false;
+    std::memset(im.px, 1, w * h);
+    int ok = save_png(path.c_str(), &im);
+    image_free(&im);
+    return ok != 0;
 }
 
 void test_autotile_rules() {
@@ -404,12 +427,14 @@ void test_io_and_settings() {
 
 void test_real_tilesets() {
     using namespace tmm;
-    const std::string ts16_path = "/Users/homeless/build/mde/tools/md-tilemap-editor/purple-grass-tiles.png";
-    const std::string ts8_path = "/Users/homeless/build/mde/tools/md-tilemap-editor/tinytiles-blue.png";
+    const std::string ts16_path = temp_path("test_ts16.png");
+    const std::string ts8_path = temp_path("test_ts8.png");
+    expect(create_dummy_tileset_png(ts16_path, 16), "create dummy 16px tileset");
+    expect(create_dummy_tileset_png(ts8_path, 8), "create dummy 8px tileset");
 
     // 16px tileset test
     Tileset ts16;
-    expect(ts16.load_from_file(ts16_path), "load 16px tileset purple-grass-tiles");
+    expect(ts16.load_from_file(ts16_path), "load 16px tileset");
     expect(ts16.tile_size == 16, "ts16 tile_size should be 16");
     expect(ts16.cols == 13 && ts16.rows == 4, "ts16 dims should be 13x4");
 
@@ -426,10 +451,11 @@ void test_real_tilesets() {
     const std::string out_png16 = temp_path("test_out_16.png");
     expect(export_composite_png(doc16, out_png16).empty(), "export composite PNG 16px");
     std::remove(out_png16.c_str());
+    std::remove(ts16_path.c_str());
 
     // 8px tileset test
     Tileset ts8;
-    expect(ts8.load_from_file(ts8_path), "load 8px tileset tinytiles-blue");
+    expect(ts8.load_from_file(ts8_path), "load 8px tileset");
     expect(ts8.tile_size == 8, "ts8 tile_size should be 8");
     expect(ts8.cols == 13 && ts8.rows == 4, "ts8 dims should be 13x4");
 
@@ -441,15 +467,17 @@ void test_real_tilesets() {
     const std::string out_png8 = temp_path("test_out_8.png");
     expect(export_composite_png(doc8, out_png8).empty(), "export composite PNG 8px");
     std::remove(out_png8.c_str());
+    std::remove(ts8_path.c_str());
 }
 
 void test_terrain_import() {
     using namespace tmm;
-    const std::string ts8_path = "/Users/homeless/build/mde/tools/md-tilemap-editor/tinytiles-blue.png";
+    const std::string ts8_path = temp_path("test_terrain_ts8.png");
+    expect(create_dummy_tileset_png(ts8_path, 8), "create dummy 8px tileset for terrain");
     const std::string tpath = temp_path("test_tileset.terrain");
     const std::string jpath = temp_path("test_tileset.json");
 
-    // Write a .terrain file pointing to tinytiles-blue.png
+    // Write a .terrain file pointing to test_terrain_ts8.png
     const std::string json_content =
         "{\n"
         "  \"version\": 1,\n"
@@ -487,6 +515,7 @@ void test_terrain_import() {
 
     std::remove(tpath.c_str());
     std::remove(jpath.c_str());
+    std::remove(ts8_path.c_str());
 }
 
 void test_line_and_outline_rect() {
