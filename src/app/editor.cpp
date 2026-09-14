@@ -2699,11 +2699,6 @@ static void draw_sidebar_tileset_page(SDL_Renderer* renderer) {
                                  ImVec2(x0, y0), ImVec2(x1, y1),
                                  ImVec2(u0, v0), ImVec2(u1, v1));
 
-                    if (c == 10 && r == 1) {
-                        dl->AddRectFilled(ImVec2(x0, y0), ImVec2(x1, y1), IM_COL32(18, 20, 26, 215));
-                        dl->AddLine(ImVec2(x0, y0), ImVec2(x1, y1), IM_COL32(230, 60, 60, 200), 1.5f);
-                        dl->AddLine(ImVec2(x1, y0), ImVec2(x0, y1), IM_COL32(230, 60, 60, 200), 1.5f);
-                    }
 
                     if (mouse.x >= x0 && mouse.x < x1 && mouse.y >= y0 && mouse.y < y1 && ImGui::IsWindowHovered()) {
                         if (g_ed.tileset_mode == TilesetSidebarMode::Stamp) {
