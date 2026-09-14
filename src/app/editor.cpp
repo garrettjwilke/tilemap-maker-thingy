@@ -130,7 +130,6 @@ struct EditorState {
     bool export_png = true;
     bool export_col_json = true;
     bool export_col_bin = true;
-    bool export_map_json = true;
     bool export_terrain = true;
     bool export_tileset_png = true;
     bool export_tileset_proj = true;
@@ -618,21 +617,53 @@ static bool load_tileset_from_path(const std::string& path, SDL_Renderer* render
 }
 
 static bool load_map_from_path(const std::string& path, SDL_Renderer* renderer) {
-    std::string err = load_map_json(g_ed.doc, path);
-    if (err.empty()) {
-        g_ed.current_map_path = path;
-        g_ed.settings.last_map_path = path;
-        persist_settings();
-        g_ed.status_msg = "Opened map: " + path;
-        if (!g_ed.doc.tileset.is_valid() && !g_ed.doc.tileset.png_path.empty()) {
-            load_tileset_from_path(g_ed.doc.tileset.png_path, renderer);
-        }
-        update_tileset_texture(renderer ? renderer : s_renderer);
-        return true;
-    } else {
-        g_ed.status_msg = "Error opening map: " + err;
+    std::string ext = "";
+    const size_t dot = path.find_last_of('.');
+    if (dot != std::string::npos) {
+        ext = path.substr(dot);
+        std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) { return std::tolower(c); });
+    }
+    if (ext != ".tmproj") {
+        g_ed.status_msg = "Invalid map project: " + path;
         return false;
     }
+
+    std::string tileset_proj_text;
+    std::string err = load_map_project(g_ed.doc, path, &tileset_proj_text);
+    if (!err.empty()) {
+        g_ed.status_msg = "Invalid map project: " + path;
+        return false;
+    }
+
+    if (!tileset_proj_text.empty()) {
+        tsm::ProjectData data;
+        if (tsm::project_from_text(data, tileset_proj_text).empty()) {
+            restore_project_data_into_editor(data, path);
+            g_ed.tileset_editor.ensure_atlas();
+            const int new_ts = g_ed.tileset_editor.doc.tile_size;
+            if (g_ed.doc.tile_size != new_ts && (new_ts == 8 || new_ts == 16)) {
+                const int w8 = g_ed.doc.width_8px();
+                const int h8 = g_ed.doc.height_8px();
+                g_ed.doc.reset_8px(w8, h8, new_ts);
+            }
+            auto saved_cols = g_ed.doc.tileset.tile_collisions;
+            sync_atlas_to_tileset(g_ed.tileset_editor.atlas, g_ed.doc.tileset);
+            if (!saved_cols.empty()) {
+                g_ed.doc.tileset.tile_collisions = std::move(saved_cols);
+            }
+            g_ed.doc.tileset.png_path = path;
+            g_ed.doc.tileset.terrain_path = "";
+        }
+    }
+
+    g_ed.doc.solve_all_autotiles();
+    update_tileset_texture(renderer ? renderer : s_renderer);
+    g_ed.doc.clear_dirty();
+    g_ed.current_map_path = path;
+    g_ed.settings.last_map_path = path;
+    persist_settings();
+    g_ed.status_msg = "Opened map: " + path;
+    return true;
 }
 
 static void open_tileset_dialog(SDL_Renderer* renderer) {
@@ -658,11 +689,11 @@ static void open_tileset_dialog(SDL_Renderer* renderer) {
 static void open_map_dialog(SDL_Renderer* renderer) {
 #ifdef __EMSCRIPTEN__
     (void)renderer;
-    web_trigger_file_dialog(".json", WebFileTarget_MapJson);
+    web_trigger_file_dialog(".tmproj", WebFileTarget_MapJson);
 #else
-    nfdu8filteritem_t filters[2] = {{"Map JSON", "json"}, {"All Files", "*"}};
+    nfdu8filteritem_t filters[1] = {{"Tilemap Project (*.tmproj)", "tmproj"}};
     nfdu8char_t* out_path = nullptr;
-    nfdresult_t res = NFD_OpenDialogU8(&out_path, filters, 2, nullptr);
+    nfdresult_t res = NFD_OpenDialogU8(&out_path, filters, 1, nullptr);
     if (res == NFD_OKAY && out_path) {
         load_map_from_path(out_path, renderer);
         NFD_FreePathU8(out_path);
@@ -732,7 +763,7 @@ void handle_web_file_upload(const std::string& path, int target_type) {
         }
     }
 
-    if (target_type == WebFileTarget_MapJson || (target_type == WebFileTarget_Auto && ext == ".json")) {
+    if (target_type == WebFileTarget_MapJson || (target_type == WebFileTarget_Auto && ext == ".tmproj")) {
         load_map_from_path(path, s_renderer);
     } else if (target_type == WebFileTarget_TilesetProj || (target_type == WebFileTarget_Auto && ext == ".tilesetproj" && g_ed.current_view == AppView::TilesetMaker)) {
         switch_to_view(AppView::TilesetMaker, s_renderer);
@@ -971,51 +1002,13 @@ void handle_web_pinch(float factor, float center_x, float center_y) {
 }
 #endif
 
-static void save_map_dialog() {
-    if (g_ed.selection_lifted) apply_moved_selection();
-    if (g_ed.paste_mode) commit_paste();
-
-#ifndef __EMSCRIPTEN__
-    if (!g_ed.current_map_path.empty()) {
-        std::string err = save_map_json(g_ed.doc, g_ed.current_map_path);
-        if (err.empty()) {
-            g_ed.status_msg = "Map saved.";
-            g_ed.doc.clear_dirty();
-            g_ed.settings.last_map_path = g_ed.current_map_path;
-            persist_settings();
-            return;
-        }
-    }
-#endif
-    nfdu8filteritem_t filters[2] = {{"Map JSON", "json"}, {"All Files", "*"}};
-    nfdu8char_t* out_path = nullptr;
-    nfdresult_t res = NFD_SaveDialogU8(&out_path, filters, 2, nullptr, (g_ed.doc.name + ".json").c_str());
-    if (res == NFD_OKAY && out_path) {
-        std::string path = out_path;
-        if (path.size() < 5 || path.substr(path.size() - 5) != ".json") {
-            path += ".json";
-        }
-        std::string err = save_map_json(g_ed.doc, path);
-        if (err.empty()) {
-            g_ed.current_map_path = path;
-            g_ed.settings.last_map_path = path;
-            persist_settings();
-            g_ed.status_msg = "Saved map to " + path;
-            g_ed.doc.clear_dirty();
-        } else {
-            g_ed.status_msg = "Error saving map: " + err;
-        }
-        NFD_FreePathU8(out_path);
-    }
-}
-
 static std::string path_filename(const std::string& path) {
     const auto slash = path.find_last_of("/\\");
     return (slash == std::string::npos) ? path : path.substr(slash + 1);
 }
 
-static std::string save_tileset_project_to_file(const std::string& path, const std::string& name) {
-    if (!g_ed.doc.tileset.is_valid()) return "No valid tileset to export";
+static std::string current_tileset_project_text(const std::string& name) {
+    if (!g_ed.doc.tileset.is_valid()) return "";
 
     // If the tileset editor has open project / atlas data, sync current doc variants and colors
     if (g_ed.tileset_editor.has_atlas && !g_ed.tileset_editor.atlas.tiles.empty()) {
@@ -1043,7 +1036,7 @@ static std::string save_tileset_project_to_file(const std::string& path, const s
         data.has_atlas = true;
         data.tileset = g_ed.tileset_editor.doc.snapshot();
         data.atlas = g_ed.tileset_editor.atlas.snapshot();
-        return tsm::save_project(data, path);
+        return tsm::project_to_text(data);
     }
 
     // Otherwise, construct atlas and tileset doc snapshot from doc.tileset
@@ -1064,7 +1057,62 @@ static std::string save_tileset_project_to_file(const std::string& path, const s
     data.has_atlas = true;
     data.tileset = g_ed.tileset_editor.doc.snapshot();
     data.atlas = g_ed.tileset_editor.atlas.snapshot();
-    return tsm::save_project(data, path);
+    return tsm::project_to_text(data);
+}
+
+static std::string save_tileset_project_to_file(const std::string& path, const std::string& name) {
+    if (!g_ed.doc.tileset.is_valid()) return "No valid tileset to export";
+    const std::string text = current_tileset_project_text(name);
+    return write_text_file(tsm::with_tilesetproj_ext(path), text) ? "" : ("Could not write tileset project to " + path);
+}
+
+static void save_map_dialog(bool force_save_as = false) {
+    if (g_ed.selection_lifted) apply_moved_selection();
+    if (g_ed.paste_mode) commit_paste();
+
+#ifndef __EMSCRIPTEN__
+    if (!force_save_as && !g_ed.current_map_path.empty()) {
+        std::string ext = "";
+        const size_t dot = g_ed.current_map_path.find_last_of('.');
+        if (dot != std::string::npos) {
+            ext = g_ed.current_map_path.substr(dot);
+            std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) { return std::tolower(c); });
+        }
+        if (ext == ".tmproj") {
+            const std::string ts_proj = current_tileset_project_text(g_ed.doc.name);
+            std::string err = save_map_project(g_ed.doc, g_ed.current_map_path, ts_proj);
+            if (err.empty()) {
+                g_ed.status_msg = "Map saved.";
+                g_ed.doc.clear_dirty();
+                g_ed.settings.last_map_path = g_ed.current_map_path;
+                persist_settings();
+                return;
+            }
+        }
+    }
+#endif
+    nfdu8filteritem_t filters[1] = {{"Tilemap Project (*.tmproj)", "tmproj"}};
+    nfdu8char_t* out_path = nullptr;
+    const std::string def_name = g_ed.doc.name.empty() ? "map.tmproj" : (g_ed.doc.name + ".tmproj");
+    nfdresult_t res = NFD_SaveDialogU8(&out_path, filters, 1, nullptr, def_name.c_str());
+    if (res == NFD_OKAY && out_path) {
+        std::string path = out_path;
+        if (path.size() < 7 || (path.substr(path.size() - 7) != ".tmproj" && path.substr(path.size() - 7) != ".TMPROJ")) {
+            path += ".tmproj";
+        }
+        const std::string ts_proj = current_tileset_project_text(g_ed.doc.name);
+        std::string err = save_map_project(g_ed.doc, path, ts_proj);
+        if (err.empty()) {
+            g_ed.current_map_path = path;
+            g_ed.settings.last_map_path = path;
+            persist_settings();
+            g_ed.status_msg = "Saved map to " + path;
+            g_ed.doc.clear_dirty();
+        } else {
+            g_ed.status_msg = "Error saving map: " + err;
+        }
+        NFD_FreePathU8(out_path);
+    }
 }
 
 static void export_tileset_dialog() {
@@ -1305,17 +1353,6 @@ static void execute_export() {
             }
             saved_files.push_back(stem + "_col.bin");
         }
-    }
-    if (g_ed.export_map_json) {
-        const std::string p = prefix + ".json";
-        const std::string ts_ref = (g_ed.export_tileset_png && g_ed.doc.tileset.is_valid()) ? (ts_stem + ".png") :
-                                   ((g_ed.export_tileset_proj && g_ed.doc.tileset.is_valid()) ? (ts_stem + ".tilesetproj") : "");
-        std::string err = save_map_json(g_ed.doc, p, ts_ref);
-        if (!err.empty()) {
-            g_ed.status_msg = "Map JSON export failed: " + err;
-            return;
-        }
-        saved_files.push_back(stem + ".json");
     }
 
     if (g_ed.doc.tileset.is_valid()) {
@@ -3296,7 +3333,6 @@ static void draw_sidebar_export_page() {
     } else {
         ImGui::Checkbox("Collision BIN", &g_ed.export_col_bin);
     }
-    ImGui::Checkbox("Map JSON", &g_ed.export_map_json);
     ImGui::TextDisabled("Composite Map PNG is always exported.");
 
     ImGui::Spacing();
@@ -3781,7 +3817,11 @@ int run_editor() {
                     }
                 }
                 if (cmd && ImGui::IsKeyPressed(ImGuiKey_S)) {
-                    save_map_dialog();
+                    if (io.KeyShift) {
+                        save_map_dialog(true);
+                    } else {
+                        save_map_dialog(false);
+                    }
                 }
                 if (cmd && ImGui::IsKeyPressed(ImGuiKey_O)) {
                     open_map_dialog(renderer);
@@ -3923,7 +3963,10 @@ int run_editor() {
                         open_map_dialog(renderer);
                     }
                     if (ImGui::MenuItem("Save Map", "Ctrl+S")) {
-                        save_map_dialog();
+                        save_map_dialog(false);
+                    }
+                    if (ImGui::MenuItem("Save Map As...", "Ctrl+Shift+S")) {
+                        save_map_dialog(true);
                     }
                     if (ImGui::MenuItem("Import Tileset...", "Ctrl+I")) {
                         open_tileset_dialog(renderer);

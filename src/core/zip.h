@@ -41,4 +41,35 @@ private:
     void write32(uint32_t val);
 };
 
+class ZipReader {
+public:
+    ZipReader() = default;
+    ~ZipReader() = default;
+
+    bool open_from_memory(const uint8_t* data, size_t size);
+    bool open_from_memory(const std::vector<uint8_t>& buffer);
+    bool open_from_file(const std::string& path);
+
+    bool is_open() const { return is_open_; }
+    size_t file_count() const { return entries_.size(); }
+    const std::vector<ZipEntryInfo>& entries() const { return entries_; }
+
+    bool has_file(const std::string& name) const;
+    std::vector<std::string> file_names() const;
+
+    bool extract_to_buffer(const std::string& name, std::vector<uint8_t>& out) const;
+    bool extract_to_text(const std::string& name, std::string& out) const;
+
+    void close();
+
+private:
+    std::vector<uint8_t> data_;
+    std::vector<ZipEntryInfo> entries_;
+    bool is_open_ = false;
+
+    const ZipEntryInfo* find_entry(const std::string& name) const;
+    static uint16_t read16(const uint8_t* p);
+    static uint32_t read32(const uint8_t* p);
+};
+
 } // namespace tmm

@@ -48,14 +48,14 @@ EM_JS(void, js_trigger_file_input, (const char* accept_ptr, int target_type), {
         let remaining = fileList.length;
         let terrainFile = null;
         let projectFile = null;
-        let mapFile = null;
+        let tmprojFile = null;
         let pngFile = null;
 
         for (const f of fileList) {
             const lower = f.name.toLowerCase();
-            if (lower.endsWith('.terrain')) terrainFile = f;
+            if (lower.endsWith('.tmproj')) tmprojFile = f;
+            else if (lower.endsWith('.terrain')) terrainFile = f;
             else if (lower.endsWith('.tilesetproj')) projectFile = f;
-            else if (lower.endsWith('.json')) mapFile = f;
             else if (lower.endsWith('.png')) pngFile = f;
         }
 
@@ -71,8 +71,8 @@ EM_JS(void, js_trigger_file_input, (const char* accept_ptr, int target_type), {
                 remaining--;
                 if (remaining === 0 && Module._wasm_on_file_uploaded) {
                     let primary = fileList[0];
-                    if (target_type === 1) { // WebFileTarget_MapJson
-                        primary = mapFile || fileList[0];
+                    if (target_type === 1) { // WebFileTarget_MapProj
+                        primary = tmprojFile || fileList[0];
                     } else if (target_type === 2 || target_type === 4) { // Tileset or Import12x4
                         primary = projectFile || terrainFile || pngFile || fileList[0];
                     } else if (target_type === 3) { // TilesetProj
@@ -80,7 +80,7 @@ EM_JS(void, js_trigger_file_input, (const char* accept_ptr, int target_type), {
                     } else if (target_type === 7) { // PendingTerrainPng
                         primary = pngFile || fileList[0];
                     } else {
-                        primary = terrainFile || projectFile || mapFile || pngFile || fileList[0];
+                        primary = tmprojFile || terrainFile || projectFile || pngFile || fileList[0];
                     }
                     const pathPtr = stringToNewUTF8('/uploads/' + primary.name);
                     Module._wasm_on_file_uploaded(pathPtr, target_type);
@@ -123,14 +123,14 @@ EM_JS(void, js_init_drag_drop, (), {
         let remaining = fileList.length;
         let terrainFile = null;
         let projectFile = null;
-        let mapFile = null;
+        let tmprojFile = null;
         let pngFile = null;
 
         for (const f of fileList) {
             const lower = f.name.toLowerCase();
-            if (lower.endsWith('.terrain')) terrainFile = f;
+            if (lower.endsWith('.tmproj')) tmprojFile = f;
+            else if (lower.endsWith('.terrain')) terrainFile = f;
             else if (lower.endsWith('.tilesetproj')) projectFile = f;
-            else if (lower.endsWith('.json')) mapFile = f;
             else if (lower.endsWith('.png')) pngFile = f;
         }
 
@@ -145,7 +145,7 @@ EM_JS(void, js_init_drag_drop, (), {
                 FS.writeFile(uploadPath, bytes);
                 remaining--;
                 if (remaining === 0 && Module._wasm_on_file_uploaded) {
-                    let primary = terrainFile || projectFile || mapFile || pngFile || fileList[0];
+                    let primary = tmprojFile || terrainFile || projectFile || pngFile || fileList[0];
                     const pathPtr = stringToNewUTF8('/uploads/' + primary.name);
                     Module._wasm_on_file_uploaded(pathPtr, 0); // Auto-detect
                     _free(pathPtr);

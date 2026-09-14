@@ -17,6 +17,10 @@ std::string export_collision_bin(const TilemapDoc& doc, const std::string& path)
 std::string save_map_json(const TilemapDoc& doc, const std::string& path, const std::string& tileset_path_override = "");
 std::string load_map_json(TilemapDoc& doc, const std::string& path);
 
+// Map project (.tmproj) save & load
+std::string save_map_project(const TilemapDoc& doc, const std::string& path, const std::string& tileset_proj_text = "");
+std::string load_map_project(TilemapDoc& doc, const std::string& path, std::string* out_tileset_proj_text = nullptr);
+
 // Tileset PNG export
 std::string export_tileset_png(const Tileset& tileset, const std::string& path);
 

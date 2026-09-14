@@ -1958,9 +1958,8 @@ void test_zip_export() {
     expect(magic[0] == 'P' && magic[1] == 'K' && magic[2] == 3 && magic[3] == 4, "magic PK 03 04 present in written file");
     z_in.close();
 
-    // 4. End-to-end multi-file export bundling simulation
+    // 4. End-to-end multi-file export bundling simulation (map PNG, collision JSON, tileset PNG)
     const std::string exp_png = temp_path("bundle_map.png");
-    const std::string exp_json = temp_path("bundle_map.json");
     const std::string exp_col = temp_path("bundle_map_collisions.json");
     const std::string exp_ts_png = temp_path("bundle_ts.png");
     const std::string bundle_zip = temp_path("bundle_all.zip");
@@ -1970,15 +1969,13 @@ void test_zip_export() {
     TilemapDoc doc(16, 12, 16);
     expect(doc.tileset.load_from_file(exp_ts_png), "load tileset for doc");
     expect(export_composite_png(doc, exp_png).empty(), "export composite png for bundle");
-    expect(save_map_json(doc, exp_json, "bundle_ts.png").empty(), "save map json for bundle");
     expect(export_mde_collision_json(doc, exp_col).empty(), "export collision json for bundle");
 
     ZipWriter bundle;
     expect(bundle.add_file_from_disk("bundle_map.png", exp_png), "bundle add map.png");
-    expect(bundle.add_file_from_disk("bundle_map.json", exp_json), "bundle add map.json");
     expect(bundle.add_file_from_disk("bundle_map_collisions.json", exp_col), "bundle add col.json");
     expect(bundle.add_file_from_disk("bundle_ts.png", exp_ts_png), "bundle add ts.png");
-    expect(bundle.file_count() == 4, "bundle file count is 4");
+    expect(bundle.file_count() == 3, "bundle file count is 3");
     expect(bundle.write_to_file(bundle_zip), "bundle write to file");
 
     std::ifstream b_in(bundle_zip, std::ios::binary | std::ios::ate);
@@ -1991,10 +1988,202 @@ void test_zip_export() {
     std::remove(tmp_bin.c_str());
     std::remove(tmp_zip.c_str());
     std::remove(exp_png.c_str());
-    std::remove(exp_json.c_str());
     std::remove(exp_col.c_str());
     std::remove(exp_ts_png.c_str());
     std::remove(bundle_zip.c_str());
+}
+
+void test_zip_reader() {
+    using namespace tmm;
+    const std::string zpath = temp_path("reader_test.zip");
+
+    // 1. Create a zip file using ZipWriter
+    ZipWriter writer;
+    const std::string text_content = "Hello, Tilemap Maker tmproj format!";
+    expect(writer.add_file("message.txt", text_content), "writer add message.txt");
+
+    std::vector<uint8_t> bin_content = {0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0xAA, 0xFF};
+    expect(writer.add_file("binary.dat", bin_content), "writer add binary.dat");
+
+    // Add a compressible string to test DEFLATE
+    std::string large_text(2000, 'A');
+    for (size_t i = 0; i < large_text.size(); i += 2) large_text[i] = 'B';
+    expect(writer.add_file("large.txt", large_text), "writer add large.txt");
+
+    expect(writer.write_to_file(zpath), "writer write_to_file");
+
+    // 2. Open using ZipReader
+    ZipReader reader;
+    expect(reader.open_from_file(zpath), "reader open_from_file");
+    expect(reader.is_open(), "reader is_open is true");
+    expect(reader.file_count() == 3, "reader file_count is 3");
+    expect(reader.has_file("message.txt"), "has message.txt");
+    expect(reader.has_file("binary.dat"), "has binary.dat");
+    expect(reader.has_file("large.txt"), "has large.txt");
+    expect(!reader.has_file("nonexistent.txt"), "does not have nonexistent.txt");
+
+    // 3. Test extraction
+    std::string extracted_text;
+    expect(reader.extract_to_text("message.txt", extracted_text), "extract message.txt");
+    expect(extracted_text == text_content, "message.txt content matches");
+
+    std::vector<uint8_t> extracted_bin;
+    expect(reader.extract_to_buffer("binary.dat", extracted_bin), "extract binary.dat");
+    expect(extracted_bin == bin_content, "binary.dat content matches");
+
+    std::string extracted_large;
+    expect(reader.extract_to_text("large.txt", extracted_large), "extract large.txt (deflated)");
+    expect(extracted_large == large_text, "large.txt content matches");
+
+    // 4. Test opening from memory
+    std::ifstream zfile(zpath, std::ios::binary);
+    std::vector<uint8_t> zmem((std::istreambuf_iterator<char>(zfile)), std::istreambuf_iterator<char>());
+    zfile.close();
+
+    ZipReader mem_reader;
+    expect(mem_reader.open_from_memory(zmem), "reader open_from_memory");
+    expect(mem_reader.file_count() == 3, "mem_reader file_count is 3");
+    std::string mem_text;
+    expect(mem_reader.extract_to_text("message.txt", mem_text), "mem extract text");
+    expect(mem_text == text_content, "mem extracted text matches");
+
+    // 5. Test invalid zip data
+    ZipReader bad_reader;
+    std::vector<uint8_t> bad_data = {1, 2, 3, 4, 5};
+    expect(!bad_reader.open_from_memory(bad_data), "bad data fails gracefully");
+
+    reader.close();
+    expect(!reader.is_open(), "reader closed");
+
+    std::remove(zpath.c_str());
+}
+
+void test_map_project_tmproj() {
+    using namespace tmm;
+    const std::string ts_png_path = temp_path("tmproj_test_ts.png");
+    const std::string tmproj_path = temp_path("test_project.tmproj");
+
+    create_dummy_tileset_png(ts_png_path, 16, 12, 4);
+
+    TilemapDoc doc(20, 15, 16);
+    doc.name = "dungeon_zone";
+    doc.origin_x = 4;
+    doc.origin_y = -2;
+    doc.buffer = 2;
+    expect(doc.tileset.load_from_file(ts_png_path), "load tileset for test map");
+
+    // Set custom collision types
+    doc.collision_types.clear();
+    doc.collision_types.push_back(CollisionType{1, "SolidWall", {255, 0, 0}});
+    doc.collision_types.push_back(CollisionType{2, "WaterHazard", {0, 100, 255}});
+    doc.collision_types.push_back(CollisionType{3, "LadderRung", {255, 200, 50}});
+
+    // Set custom tileset collisions
+    doc.tileset.tile_collisions.assign(doc.tileset.cols * doc.tileset.rows, 0);
+    doc.tileset.set_tile_collision(1, 1, 1); // SolidWall
+    doc.tileset.set_tile_collision(2, 1, 2); // WaterHazard
+    doc.tileset.set_tile_collision(3, 1, 3); // LadderRung
+
+    // Paint cells
+    MapCell c1;
+    c1.mode = TileMode::Terrain;
+    c1.atlas_x = 1;
+    c1.atlas_y = 1;
+    c1.roll = 0.42f;
+    doc.set_cell(5, 5, c1);
+
+    MapCell c2;
+    c2.mode = TileMode::Stamp;
+    c2.atlas_x = 3;
+    c2.atlas_y = 1;
+    doc.set_cell(6, 5, c2);
+
+    // Create a mock tileset project text
+    tsm::ProjectData ts_data;
+    ts_data.name = "dungeon_tileset";
+    ts_data.tile_mode = true;
+    ts_data.tileset.tile_size = 16;
+    const std::string mock_ts_proj_text = tsm::project_to_text(ts_data);
+
+    // 1. Save map project as .tmproj
+    std::string err = save_map_project(doc, tmproj_path, mock_ts_proj_text);
+    expect(err.empty(), "save_map_project succeeds");
+
+    // 2. Inspect ZIP archive contents
+    ZipReader zip;
+    expect(zip.open_from_file(tmproj_path), "open .tmproj as zip");
+    expect(zip.has_file("map.json"), ".tmproj contains map.json");
+    expect(zip.has_file("collisions.json"), ".tmproj contains collisions.json");
+    expect(zip.has_file("tileset.tilesetproj"), ".tmproj contains tileset.tilesetproj");
+    expect(zip.has_file("tileset.png"), ".tmproj contains tileset.png");
+
+    // Check collisions.json content
+    std::string col_json_text;
+    expect(zip.extract_to_text("collisions.json", col_json_text), "extract collisions.json");
+    expect(col_json_text.find("\"collision_types\"") != std::string::npos, "collisions.json has collision_types");
+    expect(col_json_text.find("\"SolidWall\"") != std::string::npos, "collisions.json has SolidWall");
+    expect(col_json_text.find("\"WaterHazard\"") != std::string::npos, "collisions.json has WaterHazard");
+    expect(col_json_text.find("\"LadderRung\"") != std::string::npos, "collisions.json has LadderRung");
+    expect(col_json_text.find("\"tileset_collisions\"") != std::string::npos, "collisions.json has tileset_collisions");
+
+    // Check map.json content
+    std::string map_json_text;
+    expect(zip.extract_to_text("map.json", map_json_text), "extract map.json");
+    expect(map_json_text.find("\"dungeon_zone\"") != std::string::npos, "map.json has doc name");
+    expect(map_json_text.find("\"cells\"") != std::string::npos, "map.json has cells");
+
+    zip.close();
+
+    // 3. Load map project into a fresh TilemapDoc
+    TilemapDoc loaded_doc;
+    std::string loaded_ts_text;
+    err = load_map_project(loaded_doc, tmproj_path, &loaded_ts_text);
+    expect(err.empty(), "load_map_project succeeds");
+
+    expect(loaded_doc.name == "dungeon_zone", "loaded doc name matches");
+    expect(loaded_doc.width == 20, "loaded doc width matches");
+    expect(loaded_doc.height == 15, "loaded doc height matches");
+    expect(loaded_doc.tile_size == 16, "loaded doc tile_size matches");
+    expect(loaded_doc.origin_x == 4, "loaded doc origin_x matches");
+    expect(loaded_doc.origin_y == -2, "loaded doc origin_y matches");
+    expect(loaded_doc.buffer == 2, "loaded doc buffer matches");
+
+    // Verify collision types
+    expect(loaded_doc.collision_types.size() == 3, "loaded collision types count is 3");
+    expect(loaded_doc.collision_types[0].name == "SolidWall", "first collision type name is SolidWall");
+    expect(loaded_doc.collision_types[1].name == "WaterHazard", "second collision type name is WaterHazard");
+    expect(loaded_doc.collision_types[2].name == "LadderRung", "third collision type name is LadderRung");
+
+    // Verify tileset collisions
+    expect(!loaded_doc.tileset.tile_collisions.empty(), "loaded tileset collisions not empty");
+    expect(loaded_doc.tileset.get_tile_collision(1, 1) == 1, "loaded tile collision (1,1) is 1");
+    expect(loaded_doc.tileset.get_tile_collision(2, 1) == 2, "loaded tile collision (2,1) is 2");
+    expect(loaded_doc.tileset.get_tile_collision(3, 1) == 3, "loaded tile collision (3,1) is 3");
+
+    // Verify cell data
+    const MapCell& lc1 = loaded_doc.get_cell(5, 5);
+    expect(lc1.mode == TileMode::Terrain, "loaded cell (5,5) is Terrain");
+    expect(lc1.atlas_x == 0 && lc1.atlas_y == 3, "loaded cell (5,5) solved autotile coords");
+    expect(std::abs(lc1.roll - 0.42f) < 0.001f, "loaded cell (5,5) roll");
+
+    const MapCell& lc2 = loaded_doc.get_cell(6, 5);
+    expect(lc2.mode == TileMode::Stamp, "loaded cell (6,5) is Stamp");
+    expect(lc2.atlas_x == 3 && lc2.atlas_y == 1, "loaded cell (6,5) coords");
+
+    // Verify tileset project text
+    expect(loaded_ts_text == mock_ts_proj_text, "extracted tileset project text matches");
+
+    // 4. Test error handling on non-zip or corrupt file
+    const std::string dummy_bad = temp_path("not_a_zip.tmproj");
+    write_text_file(dummy_bad, "This is not a zip file");
+    TilemapDoc bad_doc;
+    std::string bad_err = load_map_project(bad_doc, dummy_bad);
+    expect(!bad_err.empty(), "load_map_project on non-zip returns error");
+
+    // Cleanup
+    std::remove(ts_png_path.c_str());
+    std::remove(tmproj_path.c_str());
+    std::remove(dummy_bad.c_str());
 }
 
 } // namespace
@@ -2026,6 +2215,8 @@ int main() {
     test_tilesetproj_import();
     test_tileset_export();
     test_zip_export();
+    test_zip_reader();
+    test_map_project_tmproj();
 
     if (g_fails) {
         std::cerr << g_fails << " test(s) failed\n";

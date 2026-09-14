@@ -6,6 +6,7 @@ namespace tmm {
 
 enum WebFileTarget {
     WebFileTarget_Auto = 0,
+    WebFileTarget_MapProj = 1,
     WebFileTarget_MapJson = 1,
     WebFileTarget_Tileset = 2,
     WebFileTarget_TilesetProj = 3,

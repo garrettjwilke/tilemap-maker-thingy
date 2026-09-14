@@ -1,5 +1,11 @@
 #include "io.h"
+#include "zip.h"
 #include "gentileset.h"
+
+#define LODEPNG_NO_COMPILE_CPP
+extern "C" {
+#include "lodepng.h"
+}
 
 #include <algorithm>
 #include <cmath>
@@ -152,7 +158,49 @@ std::string export_collision_bin(const TilemapDoc& doc, const std::string& path)
     return "";
 }
 
-std::string save_map_json(const TilemapDoc& doc, const std::string& path, const std::string& tileset_path_override) {
+static bool encode_tileset_png_memory(const Tileset& tileset, std::vector<uint8_t>& out) {
+    if (!tileset.is_valid()) return false;
+    const int out_w = tileset.image_width();
+    const int out_h = tileset.image_height();
+    if (out_w <= 0 || out_h <= 0) return false;
+
+    LodePNGState state;
+    lodepng_state_init(&state);
+    state.encoder.auto_convert = 0;
+    state.info_raw.colortype = LCT_PALETTE;
+    state.info_raw.bitdepth = 8;
+    state.info_png.color.colortype = LCT_PALETTE;
+    state.info_png.color.bitdepth = 8;
+
+    const unsigned pal_size = static_cast<unsigned>(std::min(static_cast<int>(tileset.palette.size()), 256));
+    for (unsigned i = 0; i < pal_size; ++i) {
+        lodepng_palette_add(&state.info_raw, tileset.palette[i].r, tileset.palette[i].g, tileset.palette[i].b, 255);
+        lodepng_palette_add(&state.info_png.color, tileset.palette[i].r, tileset.palette[i].g, tileset.palette[i].b, 255);
+    }
+    for (unsigned i = pal_size; i < 16; ++i) {
+        lodepng_palette_add(&state.info_raw, 0, 0, 0, 255);
+        lodepng_palette_add(&state.info_png.color, 0, 0, 0, 255);
+    }
+
+    const size_t sz = static_cast<size_t>(out_w * out_h);
+    std::vector<uint8_t> px_buf(sz, 0);
+    const size_t copy_sz = std::min(sz, tileset.pixels.size());
+    std::memcpy(px_buf.data(), tileset.pixels.data(), copy_sz);
+
+    unsigned char* png = nullptr;
+    size_t pngsize = 0;
+    unsigned err = lodepng_encode(&png, &pngsize, px_buf.data(), static_cast<unsigned>(out_w), static_cast<unsigned>(out_h), &state);
+    lodepng_state_cleanup(&state);
+    if (err || !png) {
+        if (png) free(png);
+        return false;
+    }
+    out.assign(png, png + pngsize);
+    free(png);
+    return true;
+}
+
+static std::string render_map_json_text(const TilemapDoc& doc, const std::string& tileset_path_override) {
     std::ostringstream ss;
     ss << "{\n";
     ss << "\t\"version\": 4,\n";
@@ -207,76 +255,34 @@ std::string save_map_json(const TilemapDoc& doc, const std::string& path, const 
         }
     }
     ss << "\n\t]\n}\n";
-    if (!write_text_file(path, ss.str())) {
-        return "Could not write map JSON to " + path;
-    }
-    return "";
+    return ss.str();
 }
 
-std::string load_map_json(TilemapDoc& doc, const std::string& path) {
-    std::string text;
-    if (!read_text_file(path, text)) {
-        return "Could not read map file: " + path;
+static std::string render_collisions_json_text(const TilemapDoc& doc) {
+    std::ostringstream ss;
+    ss << "{\n";
+    ss << "\t\"collision_types\": [\n";
+    for (size_t i = 0; i < doc.collision_types.size(); ++i) {
+        const auto& ct = doc.collision_types[i];
+        ss << "\t\t{\"id\": " << static_cast<int>(ct.id)
+           << ", \"name\": \"" << ct.name << "\""
+           << ", \"r\": " << static_cast<int>(ct.color.r)
+           << ", \"g\": " << static_cast<int>(ct.color.g)
+           << ", \"b\": " << static_cast<int>(ct.color.b)
+           << "}" << (i + 1 < doc.collision_types.size() ? ",\n" : "\n");
     }
-    if (text.find("\"version\"") == std::string::npos || text.find("\"cells\"") == std::string::npos) {
-        return "Invalid map JSON format";
+    ss << "\t],\n";
+    ss << "\t\"tileset_collisions\": [";
+    for (size_t i = 0; i < doc.tileset.tile_collisions.size(); ++i) {
+        if (i > 0) ss << ", ";
+        ss << static_cast<int>(doc.tileset.tile_collisions[i]);
     }
+    ss << "]\n";
+    ss << "}\n";
+    return ss.str();
+}
 
-    auto find_str = [&](const std::string& key) -> std::string {
-        auto kp = text.find("\"" + key + "\"");
-        if (kp == std::string::npos) return "";
-        auto cp = text.find(':', kp);
-        if (cp == std::string::npos) return "";
-        auto q1 = text.find('"', cp + 1);
-        if (q1 == std::string::npos) return "";
-        auto q2 = text.find('"', q1 + 1);
-        if (q2 == std::string::npos) return "";
-        return text.substr(q1 + 1, q2 - q1 - 1);
-    };
-
-    auto find_int = [&](const std::string& key, int def) -> int {
-        auto kp = text.find("\"" + key + "\"");
-        if (kp == std::string::npos) return def;
-        auto cp = text.find(':', kp);
-        if (cp == std::string::npos) return def;
-        return std::atoi(text.c_str() + cp + 1);
-    };
-
-    const std::string name = find_str("name");
-    const int tile_size = find_int("tile_size", 16);
-    const int width = find_int("width", 30);
-    const int height = find_int("height", 20);
-    const int buffer = find_int("buffer", 1);
-    const int origin_x = find_int("origin_x", 0);
-    const int origin_y = find_int("origin_y", 0);
-    const std::string tileset_field = find_str("tileset");
-
-    doc.reset(width, height, tile_size);
-    doc.buffer = buffer;
-    doc.name = name.empty() ? "untitled" : name;
-    doc.origin_x = origin_x;
-    doc.origin_y = origin_y;
-
-    // Resolve tileset path
-    if (!tileset_field.empty()) {
-        std::string resolved = tileset_field;
-        if (!file_exists(resolved)) {
-            const std::string map_dir = dirname_of(path);
-            const std::string beside = (map_dir.empty() ? "" : (map_dir + "/")) + filename_of(tileset_field);
-            if (file_exists(beside)) {
-                resolved = beside;
-            } else {
-                const std::string rel = (map_dir.empty() ? "" : (map_dir + "/")) + tileset_field;
-                if (file_exists(rel)) {
-                    resolved = rel;
-                }
-            }
-        }
-        if (file_exists(resolved)) {
-            doc.tileset.load_from_file(resolved);
-        }
-    }
-
+static bool parse_collisions_json_text(TilemapDoc& doc, const std::string& text) {
     // Parse collision types if present
     size_t col_types_pos = text.find("\"collision_types\"");
     if (col_types_pos != std::string::npos) {
@@ -355,6 +361,71 @@ std::string load_map_json(TilemapDoc& doc, const std::string& path) {
             }
         }
     }
+    return true;
+}
+
+static std::string load_map_json_from_text(TilemapDoc& doc, const std::string& text, const std::string& path_hint = "") {
+    if (text.find("\"version\"") == std::string::npos || text.find("\"cells\"") == std::string::npos) {
+        return "Invalid map JSON format";
+    }
+
+    auto find_str = [&](const std::string& key) -> std::string {
+        auto kp = text.find("\"" + key + "\"");
+        if (kp == std::string::npos) return "";
+        auto cp = text.find(':', kp);
+        if (cp == std::string::npos) return "";
+        auto q1 = text.find('"', cp + 1);
+        if (q1 == std::string::npos) return "";
+        auto q2 = text.find('"', q1 + 1);
+        if (q2 == std::string::npos) return "";
+        return text.substr(q1 + 1, q2 - q1 - 1);
+    };
+
+    auto find_int = [&](const std::string& key, int def) -> int {
+        auto kp = text.find("\"" + key + "\"");
+        if (kp == std::string::npos) return def;
+        auto cp = text.find(':', kp);
+        if (cp == std::string::npos) return def;
+        return std::atoi(text.c_str() + cp + 1);
+    };
+
+    const std::string name = find_str("name");
+    const int tile_size = find_int("tile_size", 16);
+    const int width = find_int("width", 30);
+    const int height = find_int("height", 20);
+    const int buffer = find_int("buffer", 1);
+    const int origin_x = find_int("origin_x", 0);
+    const int origin_y = find_int("origin_y", 0);
+    const std::string tileset_field = find_str("tileset");
+
+    doc.reset(width, height, tile_size);
+    doc.buffer = buffer;
+    doc.name = name.empty() ? "untitled" : name;
+    doc.origin_x = origin_x;
+    doc.origin_y = origin_y;
+
+    // Resolve tileset path if not empty and exists
+    if (!tileset_field.empty() && !path_hint.empty()) {
+        std::string resolved = tileset_field;
+        if (!file_exists(resolved)) {
+            const std::string map_dir = dirname_of(path_hint);
+            const std::string beside = (map_dir.empty() ? "" : (map_dir + "/")) + filename_of(tileset_field);
+            if (file_exists(beside)) {
+                resolved = beside;
+            } else {
+                const std::string rel = (map_dir.empty() ? "" : (map_dir + "/")) + tileset_field;
+                if (file_exists(rel)) {
+                    resolved = rel;
+                }
+            }
+        }
+        if (file_exists(resolved)) {
+            doc.tileset.load_from_file(resolved);
+        }
+    }
+
+    // Parse collision types and tileset collisions from JSON text
+    parse_collisions_json_text(doc, text);
 
     // Parse cells
     size_t cells_arr = text.find("\"cells\"");
@@ -431,6 +502,108 @@ std::string load_map_json(TilemapDoc& doc, const std::string& path) {
     doc.clear_dirty();
     return "";
 }
+
+std::string save_map_json(const TilemapDoc& doc, const std::string& path, const std::string& tileset_path_override) {
+    const std::string text = render_map_json_text(doc, tileset_path_override);
+    if (!write_text_file(path, text)) {
+        return "Could not write map JSON to " + path;
+    }
+    return "";
+}
+
+std::string load_map_json(TilemapDoc& doc, const std::string& path) {
+    std::string text;
+    if (!read_text_file(path, text)) {
+        return "Could not read map file: " + path;
+    }
+    return load_map_json_from_text(doc, text, path);
+}
+
+std::string save_map_project(const TilemapDoc& doc, const std::string& path, const std::string& tileset_proj_text) {
+    ZipWriter zip;
+
+    // 1. map.json
+    std::string map_json = render_map_json_text(doc, "tileset.tilesetproj");
+    if (!zip.add_file("map.json", map_json)) {
+        return "Could not add map.json to project archive";
+    }
+
+    // 2. collisions.json
+    std::string col_json = render_collisions_json_text(doc);
+    if (!zip.add_file("collisions.json", col_json)) {
+        return "Could not add collisions.json to project archive";
+    }
+
+    // 3. tileset.tilesetproj
+    if (!tileset_proj_text.empty()) {
+        if (!zip.add_file("tileset.tilesetproj", tileset_proj_text)) {
+            return "Could not add tileset.tilesetproj to project archive";
+        }
+    }
+
+    // 4. tileset.png
+    if (doc.tileset.is_valid()) {
+        std::vector<uint8_t> png_bytes;
+        if (encode_tileset_png_memory(doc.tileset, png_bytes) && !png_bytes.empty()) {
+            zip.add_file("tileset.png", png_bytes);
+        }
+    }
+
+    if (!zip.write_to_file(path)) {
+        return "Could not write project archive to " + path;
+    }
+
+    return "";
+}
+
+std::string load_map_project(TilemapDoc& doc, const std::string& path, std::string* out_tileset_proj_text) {
+    ZipReader zip;
+    if (!zip.open_from_file(path)) {
+        return "Invalid map project: " + path;
+    }
+
+    if (!zip.has_file("map.json")) {
+        return "Invalid map project (missing map.json): " + path;
+    }
+
+    std::string map_text;
+    if (!zip.extract_to_text("map.json", map_text)) {
+        return "Could not read map.json from project archive: " + path;
+    }
+
+    std::string parse_err = load_map_json_from_text(doc, map_text, path);
+    if (!parse_err.empty()) {
+        return parse_err;
+    }
+
+    // Load collisions.json if present
+    if (zip.has_file("collisions.json")) {
+        std::string col_text;
+        if (zip.extract_to_text("collisions.json", col_text)) {
+            parse_collisions_json_text(doc, col_text);
+        }
+    }
+
+    // Extract tileset project text if present and requested
+    std::string ts_proj_name;
+    if (zip.has_file("tileset.tilesetproj")) {
+        ts_proj_name = "tileset.tilesetproj";
+    } else {
+        for (const auto& fn : zip.file_names()) {
+            if (fn.size() >= 12 && fn.substr(fn.size() - 12) == ".tilesetproj") {
+                ts_proj_name = fn;
+                break;
+            }
+        }
+    }
+
+    if (!ts_proj_name.empty() && out_tileset_proj_text) {
+        zip.extract_to_text(ts_proj_name, *out_tileset_proj_text);
+    }
+
+    return "";
+}
+
 
 std::string export_tileset_png(const Tileset& tileset, const std::string& path) {
     if (!tileset.is_valid()) {
