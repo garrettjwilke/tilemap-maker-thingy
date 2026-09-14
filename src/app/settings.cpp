@@ -91,7 +91,6 @@ std::string format_settings(const Settings& s) {
     ss << "brush_size=" << s.brush_size << "\n";
     ss << "paint_mode=" << (s.paint_mode == 1 ? "stamp" : "terrain") << "\n";
     ss << "sidebar_page=" << s.sidebar_page << "\n";
-    ss << "export_terrain=" << (s.export_terrain ? "true" : "false") << "\n";
     ss << "export_tileset_png=" << (s.export_tileset_png ? "true" : "false") << "\n";
     ss << "export_tileset_proj=" << (s.export_tileset_proj ? "true" : "false") << "\n";
     ss << "export_zip=" << (s.export_zip ? "true" : "false") << "\n";
@@ -130,7 +129,6 @@ bool parse_settings_text(Settings& s, const std::string& text) {
         else if (key == "brush_size") s.brush_size = std::clamp(std::atoi(val.c_str()), 1, 4);
         else if (key == "paint_mode") s.paint_mode = (val == "stamp" || val == "1") ? 1 : 0;
         else if (key == "sidebar_page") s.sidebar_page = std::clamp(std::atoi(val.c_str()), 0, 2);
-        else if (key == "export_terrain") s.export_terrain = (val == "true" || val == "1");
         else if (key == "export_tileset_png") s.export_tileset_png = (val == "true" || val == "1");
         else if (key == "export_tileset_proj") s.export_tileset_proj = (val == "true" || val == "1");
         else if (key == "export_zip") s.export_zip = (val == "true" || val == "1");

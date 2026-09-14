@@ -130,7 +130,6 @@ struct EditorState {
     bool export_png = true;
     bool export_col_json = true;
     bool export_col_bin = true;
-    bool export_terrain = true;
     bool export_tileset_png = true;
     bool export_tileset_proj = true;
 #ifdef __EMSCRIPTEN__
@@ -471,7 +470,6 @@ static void persist_settings(SDL_Window* window) {
     if (std::strlen(g_ed.export_folder) > 0) {
         g_ed.settings.last_export_dir = g_ed.export_folder;
     }
-    g_ed.settings.export_terrain = g_ed.export_terrain;
     g_ed.settings.export_tileset_png = g_ed.export_tileset_png;
     g_ed.settings.export_tileset_proj = g_ed.export_tileset_proj;
     g_ed.settings.export_zip = g_ed.export_zip;
@@ -497,123 +495,51 @@ static std::string filename_of(const std::string& path) {
     return fs::path(path).filename().string();
 }
 
-static bool load_tileset_from_path(const std::string& path, SDL_Renderer* renderer, const std::string& override_png = "") {
-    if (path.size() >= 12 && path.substr(path.size() - 12) == ".tilesetproj") {
-        tsm::ProjectData data;
-        const std::string err = tsm::load_project(data, path);
-        if (!err.empty()) {
-            g_ed.status_msg = "Error loading tileset project: " + err;
-            return false;
-        }
-        restore_project_data_into_editor(data, path);
-
-        std::string ensure_err = g_ed.tileset_editor.ensure_atlas();
-        if (!ensure_err.empty()) {
-            g_ed.status_msg = "Error preparing tileset atlas: " + ensure_err;
-            return false;
-        }
-        const int new_ts = g_ed.tileset_editor.doc.tile_size;
-        if (g_ed.doc.tile_size != new_ts && (new_ts == 8 || new_ts == 16)) {
-            const int w8 = g_ed.doc.width_8px();
-            const int h8 = g_ed.doc.height_8px();
-            g_ed.doc.reset_8px(w8, h8, new_ts);
-        }
-        sync_atlas_to_tileset(g_ed.tileset_editor.atlas, g_ed.doc.tileset);
-        g_ed.doc.tileset.png_path = path;
-        g_ed.doc.tileset.terrain_path = "";
-        update_tileset_texture(renderer ? renderer : s_renderer);
-        g_ed.doc.solve_all_autotiles();
-        if (!g_ed.doc.tileset.variants.empty()) {
-            g_ed.status_msg = "Imported tileset project (" + std::to_string(g_ed.doc.tileset.variants.size()) +
-                              " variants): " + path;
-        } else {
-            g_ed.status_msg = "Imported tileset project: " + path;
-        }
-        g_ed.settings.last_tileset_path = path;
-        persist_settings();
-        return true;
+static bool load_tileset_from_path(const std::string& path, SDL_Renderer* renderer) {
+    std::string ext = "";
+    const size_t dot = path.find_last_of('.');
+    if (dot != std::string::npos) {
+        ext = path.substr(dot);
+        std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) { return std::tolower(c); });
     }
-
-#ifndef __EMSCRIPTEN__
-    if (path.size() >= 8 && path.substr(path.size() - 8) == ".terrain" && override_png.empty()) {
-        std::string t_text;
-        std::string ts_name;
-        if (read_text_file(path, t_text)) {
-            auto ts_pos = t_text.find("\"tileset\"");
-            if (ts_pos != std::string::npos) {
-                auto col = t_text.find(':', ts_pos);
-                if (col != std::string::npos) {
-                    auto q1 = t_text.find('"', col + 1);
-                    if (q1 != std::string::npos) {
-                        auto q2 = t_text.find('"', q1 + 1);
-                        if (q2 != std::string::npos) {
-                            ts_name = t_text.substr(q1 + 1, q2 - q1 - 1);
-                        }
-                    }
-                }
-            }
-        }
-        const std::string dir = dirname_of(path);
-        std::string stem = basename_of(path);
-        if (stem.size() >= 8 && stem.substr(stem.size() - 8) == ".terrain") {
-            stem = stem.substr(0, stem.size() - 8);
-        }
-        std::vector<std::string> candidates;
-        if (!ts_name.empty()) {
-            if (!dir.empty()) candidates.push_back(dir + "/" + ts_name);
-            candidates.push_back(ts_name);
-        }
-        if (!dir.empty()) candidates.push_back(dir + "/" + stem + ".png");
-        candidates.push_back(stem + ".png");
-
-        bool found = false;
-        for (const auto& c : candidates) {
-            if (file_exists(c)) {
-                found = true;
-                break;
-            }
-        }
-
-        if (!found) {
-            nfdu8filteritem_t png_filter[1] = {{"Matching Tileset PNG (*.png)", "png"}};
-            nfdu8char_t* chosen_png = nullptr;
-            nfdresult_t res = NFD_OpenDialogU8(&chosen_png, png_filter, 1, dir.empty() ? nullptr : dir.c_str());
-            if (res == NFD_OKAY && chosen_png) {
-                std::string chosen_path = chosen_png;
-                NFD_FreePathU8(chosen_png);
-                return load_tileset_from_path(path, renderer, chosen_path);
-            } else {
-                g_ed.status_msg = "Terrain import cancelled: matching PNG image required.";
-                return false;
-            }
-        }
-    }
-#endif
-
-    if (g_ed.doc.tileset.load_from_file(path, override_png)) {
-        const int old_ts = g_ed.doc.tile_size;
-        const int new_ts = g_ed.doc.tileset.tile_size;
-        if (old_ts != new_ts) {
-            const int w8 = g_ed.doc.width_8px();
-            const int h8 = g_ed.doc.height_8px();
-            g_ed.doc.tile_size = new_ts;
-            g_ed.doc.resize_8px(w8, h8);
-        }
-        g_ed.doc.solve_all_autotiles();
-        update_tileset_texture(renderer ? renderer : s_renderer);
-        if (!g_ed.doc.tileset.variants.empty()) {
-            g_ed.status_msg = "Loaded tileset (" + std::to_string(g_ed.doc.tileset.variants.size()) +
-                              " variants): " + path;
-        } else {
-            g_ed.status_msg = "Loaded tileset: " + path;
-        }
-        g_ed.settings.last_tileset_path = path;
-        persist_settings();
-        return true;
-    } else {
-        g_ed.status_msg = "Error loading tileset: " + g_ed.doc.tileset.error;
+    if (ext != ".tilesetproj") {
+        g_ed.status_msg = "Map Editor only imports .tilesetproj files (use Tileset Maker to import PNG/Terrain)";
         return false;
     }
+
+    tsm::ProjectData data;
+    const std::string err = tsm::load_project(data, path);
+    if (!err.empty()) {
+        g_ed.status_msg = "Error loading tileset project: " + err;
+        return false;
+    }
+    restore_project_data_into_editor(data, path);
+
+    std::string ensure_err = g_ed.tileset_editor.ensure_atlas();
+    if (!ensure_err.empty()) {
+        g_ed.status_msg = "Error preparing tileset atlas: " + ensure_err;
+        return false;
+    }
+    const int new_ts = g_ed.tileset_editor.doc.tile_size;
+    if (g_ed.doc.tile_size != new_ts && (new_ts == 8 || new_ts == 16)) {
+        const int w8 = g_ed.doc.width_8px();
+        const int h8 = g_ed.doc.height_8px();
+        g_ed.doc.reset_8px(w8, h8, new_ts);
+    }
+    sync_atlas_to_tileset(g_ed.tileset_editor.atlas, g_ed.doc.tileset);
+    g_ed.doc.tileset.png_path = path;
+    g_ed.doc.tileset.terrain_path = "";
+    update_tileset_texture(renderer ? renderer : s_renderer);
+    g_ed.doc.solve_all_autotiles();
+    if (!g_ed.doc.tileset.variants.empty()) {
+        g_ed.status_msg = "Imported tileset project (" + std::to_string(g_ed.doc.tileset.variants.size()) +
+                          " variants): " + path;
+    } else {
+        g_ed.status_msg = "Imported tileset project: " + path;
+    }
+    g_ed.settings.last_tileset_path = path;
+    persist_settings();
+    return true;
 }
 
 static bool load_map_from_path(const std::string& path, SDL_Renderer* renderer) {
@@ -669,16 +595,13 @@ static bool load_map_from_path(const std::string& path, SDL_Renderer* renderer) 
 static void open_tileset_dialog(SDL_Renderer* renderer) {
 #ifdef __EMSCRIPTEN__
     (void)renderer;
-    web_trigger_file_dialog(".png,.terrain,.tilesetproj", WebFileTarget_Tileset);
+    web_trigger_file_dialog(".tilesetproj", WebFileTarget_Tileset);
 #else
-    nfdu8filteritem_t filters[4] = {
-        {"Tileset Files (*.png, *.terrain, *.tilesetproj)", "png,terrain,tilesetproj"},
-        {"Tileset Projects (*.tilesetproj)", "tilesetproj"},
-        {"PNG Images (*.png)", "png"},
-        {"Terrain Files (*.terrain)", "terrain"}
+    nfdu8filteritem_t filters[1] = {
+        {"Tileset Project (*.tilesetproj)", "tilesetproj"}
     };
     nfdu8char_t* out_path = nullptr;
-    nfdresult_t res = NFD_OpenDialogU8(&out_path, filters, 4, nullptr);
+    nfdresult_t res = NFD_OpenDialogU8(&out_path, filters, 1, nullptr);
     if (res == NFD_OKAY && out_path) {
         load_tileset_from_path(out_path, renderer);
         NFD_FreePathU8(out_path);
@@ -753,12 +676,8 @@ void handle_web_file_upload(const std::string& path, int target_type) {
             const AppView view_to_load = s_pending_terrain_view;
             s_pending_terrain_path.clear();
 
-            if (view_to_load == AppView::TilesetMaker) {
-                switch_to_view(AppView::TilesetMaker, s_renderer);
-                g_ed.tileset_editor.import_12x4(terrain_to_load);
-            } else {
-                load_tileset_from_path(terrain_to_load, s_renderer, path);
-            }
+            switch_to_view(AppView::TilesetMaker, s_renderer);
+            g_ed.tileset_editor.import_12x4(terrain_to_load);
             return;
         }
     }
@@ -858,23 +777,21 @@ void handle_web_file_upload(const std::string& path, int target_type) {
         } else {
             g_ed.tileset_editor.status = loaded.error;
         }
-    } else if (target_type == WebFileTarget_Tileset || ext == ".terrain" || ext == ".png" || ext == ".tilesetproj") {
-        if (ext == ".tilesetproj") {
-            if (g_ed.current_view == AppView::TilesetMaker) {
-                switch_to_view(AppView::TilesetMaker, s_renderer);
-                tsm::ProjectData data;
-                const std::string err = tsm::load_project(data, path);
-                if (err.empty()) {
-                    restore_project_data_into_editor(data, path);
-                    g_ed.tileset_editor.configure_view();
-                } else {
-                    g_ed.tileset_editor.status = "Error loading project: " + err;
-                }
+    } else if (target_type == WebFileTarget_Tileset || (target_type == WebFileTarget_Auto && ext == ".tilesetproj")) {
+        if (g_ed.current_view == AppView::TilesetMaker) {
+            switch_to_view(AppView::TilesetMaker, s_renderer);
+            tsm::ProjectData data;
+            const std::string err = tsm::load_project(data, path);
+            if (err.empty()) {
+                restore_project_data_into_editor(data, path);
+                g_ed.tileset_editor.configure_view();
             } else {
-                load_tileset_from_path(path, s_renderer);
+                g_ed.tileset_editor.status = "Error loading project: " + err;
             }
-            return;
+        } else {
+            load_tileset_from_path(path, s_renderer);
         }
+    } else if (g_ed.current_view == AppView::TilesetMaker && (ext == ".terrain" || ext == ".png")) {
         if (ext == ".terrain") {
             std::string t_text;
             std::string ts_name;
@@ -915,8 +832,7 @@ void handle_web_file_upload(const std::string& path, int target_type) {
             }
 
             if (!png_exists) {
-                if (g_ed.current_view == AppView::TilesetMaker &&
-                    g_ed.tileset_editor.has_atlas && !g_ed.tileset_editor.atlas.tiles.empty()) {
+                if (g_ed.tileset_editor.has_atlas && !g_ed.tileset_editor.atlas.tiles.empty()) {
                     tsm::TerrainLoad tload = tsm::load_terrain(path);
                     if (tload.error.empty()) {
                         for (const auto& v : tload.variants) {
@@ -933,23 +849,18 @@ void handle_web_file_upload(const std::string& path, int target_type) {
                 }
 
                 s_pending_terrain_path = path;
-                s_pending_terrain_view = (g_ed.current_view == AppView::TilesetMaker) ? AppView::TilesetMaker : AppView::Tilemap;
+                s_pending_terrain_view = AppView::TilesetMaker;
                 const std::string expected_img = ts_name.empty() ? (stem + ".png") : ts_name;
                 const std::string prompt = "Uploaded '" + filename_of(path) + "'. Please select the matching tileset image ('" + expected_img + "')...";
                 g_ed.status_msg = prompt;
-                if (g_ed.current_view == AppView::TilesetMaker) {
-                    g_ed.tileset_editor.status = prompt;
-                }
+                g_ed.tileset_editor.status = prompt;
                 web_trigger_file_dialog(".png", WebFileTarget_PendingTerrainPng);
                 return;
             }
         }
-
-        if (g_ed.current_view == AppView::TilesetMaker) {
-            g_ed.tileset_editor.import_12x4(path);
-        } else {
-            load_tileset_from_path(path, s_renderer);
-        }
+        g_ed.tileset_editor.import_12x4(path);
+    } else if (ext == ".terrain" || ext == ".png") {
+        g_ed.status_msg = "Map Editor only imports .tilesetproj files (use Tileset Maker to import PNG/Terrain)";
     } else {
         g_ed.status_msg = "Unknown file type: " + path;
     }
@@ -1191,14 +1102,6 @@ static void export_tileset_dialog() {
         }
         saved.push_back(stem + ".tilesetproj");
     }
-    // 3. Export Terrain if variants exist
-    if (!g_ed.doc.tileset.variants.empty()) {
-        std::string terr_path = dir + "/" + stem + ".terrain";
-        std::string err = export_tileset_terrain(g_ed.doc.tileset, terr_path, stem + ".png");
-        if (err.empty()) {
-            saved.push_back(stem + ".terrain");
-        }
-    }
 
     std::string msg = "Tileset exported: ";
     for (size_t i = 0; i < saved.size(); ++i) {
@@ -1373,15 +1276,6 @@ static void execute_export() {
                 return;
             }
             saved_files.push_back(ts_stem + ".tilesetproj");
-        }
-        if (g_ed.export_terrain) {
-            const std::string p = export_target_dir + "/" + ts_stem + ".terrain";
-            std::string err = export_tileset_terrain(g_ed.doc.tileset, p, ts_stem + ".png");
-            if (!err.empty()) {
-                g_ed.status_msg = "Terrain export failed: " + err;
-                return;
-            }
-            saved_files.push_back(ts_stem + ".terrain");
         }
     }
 
@@ -3349,9 +3243,6 @@ static void draw_sidebar_export_page() {
         if (ImGui::Checkbox("Tileset Project (.tilesetproj)", &g_ed.export_tileset_proj)) {
             persist_settings();
         }
-        if (ImGui::Checkbox("Tileset Terrain (.terrain)", &g_ed.export_terrain)) {
-            persist_settings();
-        }
     }
 
     ImGui::Spacing();
@@ -3592,7 +3483,6 @@ int run_editor() {
     g_ed.rect_fill = true;
     g_ed.rect_circle = false;
     g_ed.tileset_mode = TilesetSidebarMode::Stamp;
-    g_ed.export_terrain = g_ed.settings.export_terrain;
     g_ed.export_tileset_png = g_ed.settings.export_tileset_png;
     g_ed.export_tileset_proj = g_ed.settings.export_tileset_proj;
     g_ed.export_zip = g_ed.settings.export_zip;

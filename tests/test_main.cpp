@@ -1382,15 +1382,18 @@ void test_tileset_terrain_and_variants() {
     std::remove(t_export_path.c_str());
     std::remove(ts_png.c_str());
 
-    // 4. Settings export_terrain persistence
+    // 4. Settings tileset export settings persistence (export_terrain removed)
     Settings s;
-    s.export_terrain = false;
+    s.export_tileset_png = false;
+    s.export_tileset_proj = false;
     const std::string cfg_text = format_settings(s);
-    expect(cfg_text.find("export_terrain=false") != std::string::npos, "format_settings includes export_terrain=false");
+    expect(cfg_text.find("export_terrain=") == std::string::npos, "format_settings does not include export_terrain");
+    expect(cfg_text.find("export_tileset_png=false") != std::string::npos, "format_settings includes export_tileset_png=false");
 
     Settings s2;
     expect(parse_settings_text(s2, cfg_text), "parse_settings_text succeeded");
-    expect(s2.export_terrain == false, "parsed export_terrain is false");
+    expect(s2.export_tileset_png == false, "parsed export_tileset_png is false");
+    expect(s2.export_tileset_proj == false, "parsed export_tileset_proj is false");
 
     // 5. Live autotile re-evaluation on variant remapping
     TilemapDoc doc(10, 10, 16);
