@@ -18,6 +18,9 @@ struct Settings {
     int brush_size = 1;
     int paint_mode = 0; // 0 = Terrain, 1 = Stamp
     int sidebar_page = 0; // 0 = Tileset, 1 = MapProperties, 2 = Export
+    bool export_map_proj = true;
+    bool export_col_json = false;
+    bool export_col_bin = false;
     bool export_tileset_png = true;
     bool export_tileset_proj = true;
 #ifdef __EMSCRIPTEN__

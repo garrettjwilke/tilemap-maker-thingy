@@ -128,8 +128,9 @@ struct EditorState {
     bool show_export_modal = false;
     char export_folder[512] = "";
     bool export_png = true;
-    bool export_col_json = true;
-    bool export_col_bin = true;
+    bool export_map_proj = true;
+    bool export_col_json = false;
+    bool export_col_bin = false;
     bool export_tileset_png = true;
     bool export_tileset_proj = true;
 #ifdef __EMSCRIPTEN__
@@ -470,6 +471,9 @@ static void persist_settings(SDL_Window* window) {
     if (std::strlen(g_ed.export_folder) > 0) {
         g_ed.settings.last_export_dir = g_ed.export_folder;
     }
+    g_ed.settings.export_map_proj = g_ed.export_map_proj;
+    g_ed.settings.export_col_json = g_ed.export_col_json;
+    g_ed.settings.export_col_bin = g_ed.export_col_bin;
     g_ed.settings.export_tileset_png = g_ed.export_tileset_png;
     g_ed.settings.export_tileset_proj = g_ed.export_tileset_proj;
     g_ed.settings.export_zip = g_ed.export_zip;
@@ -1235,6 +1239,15 @@ static void execute_export() {
             return;
         }
         saved_files.push_back(stem + ".png");
+    }
+    if (g_ed.export_map_proj) {
+        const std::string p = prefix + ".tmproj";
+        std::string err = save_map_project(g_ed.doc, p, current_tileset_project_text(ts_stem));
+        if (!err.empty()) {
+            g_ed.status_msg = "Map project export failed: " + err;
+            return;
+        }
+        saved_files.push_back(stem + ".tmproj");
     }
     if (g_ed.export_col_json) {
         const std::string p = prefix + "_collisions.json";
@@ -3216,7 +3229,15 @@ static void draw_sidebar_export_page() {
     ImGui::Spacing();
 
     ImGui::TextColored(sec_hdr_col, "MAP FORMATS");
-    ImGui::Checkbox("MDE Collision JSON", &g_ed.export_col_json);
+    if (ImGui::Checkbox("Map Project (.tmproj)", &g_ed.export_map_proj)) {
+        persist_settings();
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Save complete map project archive with tileset and collisions");
+    }
+    if (ImGui::Checkbox("MDE Collision JSON", &g_ed.export_col_json)) {
+        persist_settings();
+    }
     const int types_used = g_ed.doc.build_collision_grid().count_types_used();
     if (types_used > 1) {
         ImGui::BeginDisabled(true);
@@ -3225,7 +3246,9 @@ static void draw_sidebar_export_page() {
         ImGui::EndDisabled();
         ImGui::TextColored(ImVec4(1.0f, 0.65f, 0.2f, 1.0f), "BIN disabled: >1 collision types used (%d)", types_used);
     } else {
-        ImGui::Checkbox("Collision BIN", &g_ed.export_col_bin);
+        if (ImGui::Checkbox("Collision BIN", &g_ed.export_col_bin)) {
+            persist_settings();
+        }
     }
     ImGui::TextDisabled("Composite Map PNG is always exported.");
 
@@ -3483,6 +3506,9 @@ int run_editor() {
     g_ed.rect_fill = true;
     g_ed.rect_circle = false;
     g_ed.tileset_mode = TilesetSidebarMode::Stamp;
+    g_ed.export_map_proj = g_ed.settings.export_map_proj;
+    g_ed.export_col_json = g_ed.settings.export_col_json;
+    g_ed.export_col_bin = g_ed.settings.export_col_bin;
     g_ed.export_tileset_png = g_ed.settings.export_tileset_png;
     g_ed.export_tileset_proj = g_ed.settings.export_tileset_proj;
     g_ed.export_zip = g_ed.settings.export_zip;

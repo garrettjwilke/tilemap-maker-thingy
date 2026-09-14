@@ -1382,16 +1382,30 @@ void test_tileset_terrain_and_variants() {
     std::remove(t_export_path.c_str());
     std::remove(ts_png.c_str());
 
-    // 4. Settings tileset export settings persistence (export_terrain removed)
+    // 4. Settings export settings defaults and persistence
+    Settings s_def;
+    expect(s_def.export_map_proj == true, "default export_map_proj is true");
+    expect(s_def.export_col_json == false, "default export_col_json is false");
+    expect(s_def.export_col_bin == false, "default export_col_bin is false");
+
     Settings s;
+    s.export_map_proj = false;
+    s.export_col_json = true;
+    s.export_col_bin = true;
     s.export_tileset_png = false;
     s.export_tileset_proj = false;
     const std::string cfg_text = format_settings(s);
     expect(cfg_text.find("export_terrain=") == std::string::npos, "format_settings does not include export_terrain");
+    expect(cfg_text.find("export_map_proj=false") != std::string::npos, "format_settings includes export_map_proj=false");
+    expect(cfg_text.find("export_col_json=true") != std::string::npos, "format_settings includes export_col_json=true");
+    expect(cfg_text.find("export_col_bin=true") != std::string::npos, "format_settings includes export_col_bin=true");
     expect(cfg_text.find("export_tileset_png=false") != std::string::npos, "format_settings includes export_tileset_png=false");
 
     Settings s2;
     expect(parse_settings_text(s2, cfg_text), "parse_settings_text succeeded");
+    expect(s2.export_map_proj == false, "parsed export_map_proj is false");
+    expect(s2.export_col_json == true, "parsed export_col_json is true");
+    expect(s2.export_col_bin == true, "parsed export_col_bin is true");
     expect(s2.export_tileset_png == false, "parsed export_tileset_png is false");
     expect(s2.export_tileset_proj == false, "parsed export_tileset_proj is false");
 
