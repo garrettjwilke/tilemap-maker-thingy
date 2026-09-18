@@ -43,7 +43,7 @@ namespace tmm {
 
 enum class AppView { Tilemap, TilesetMaker };
 enum class Tool { Paint, Line, Erase, Rect, Fill, Select, Eyedropper };
-enum class TilesetSidebarMode { Stamp, Collision, Variants };
+enum class TilesetSidebarMode { Stamp, Slopes, Variants, Collision };
 enum class SidebarPage { Tileset = 0, MapProperties = 1, Export = 2 };
 
 struct EditorState {
@@ -63,6 +63,11 @@ struct EditorState {
     Cell selected_terrain_tile = {Tileset::kDefaultCenterCol, Tileset::kDefaultCenterRow};
     Cell hovered_terrain_tile = {-1, -1};
     float terrain_variant_prob = 0.30f;
+
+    // Slope State
+    SlopeSize slope_size = SlopeSize::Slope1x1;
+    bool slope_auto_fill_dirt = true;
+    bool slope_force_flip = false;
 
     Tool tool = Tool::Paint;
     TileMode paint_mode = TileMode::Terrain;
@@ -206,7 +211,7 @@ static bool file_exists(const std::string& path) {
 
 static void sync_atlas_to_tileset(const tsm::AtlasDoc& atlas, Tileset& tileset) {
     tileset.cols = atlas.cols;
-    tileset.rows = tsm::AtlasDoc::kRows;
+    tileset.rows = atlas.rows;
     tileset.tile_size = atlas.tile_size;
     tileset.palette.clear();
     for (const auto& c : atlas.palette) {
@@ -243,7 +248,11 @@ static void sync_atlas_to_tileset(const tsm::AtlasDoc& atlas, Tileset& tileset) 
 }
 
 static void sync_tileset_to_atlas(const Tileset& tileset, tsm::AtlasDoc& atlas) {
-    atlas.reset(tileset.tile_size, tileset.cols);
+    atlas.reset(tileset.tile_size, tileset.tile_size, tileset.cols, tileset.rows);
+    if (tileset.has_slope_row()) {
+        atlas.add_slope_group(tsm::SlopeGroup::Slope1x1);
+        atlas.add_slope_group(tsm::SlopeGroup::Slope2x1);
+    }
     std::vector<tsm::Rgb> pal;
     for (const auto& c : tileset.palette) {
         pal.push_back(tsm::Rgb{c.r, c.g, c.b});
@@ -1693,7 +1702,7 @@ static void draw_tool_options_row() {
         }
     };
 
-    // Helper for rendering tile source toggle (Terrain vs Stamp)
+    // Helper for rendering tile source toggle (Terrain vs Stamp vs Slopes)
     auto draw_source_controls = [](const char* id_suffix) {
         ImGui::Text("Mode:");
         ImGui::SameLine();
@@ -1717,6 +1726,17 @@ static void draw_tool_options_row() {
             }
         }
         ImGui::SameLine();
+        {
+            ScopedStyleColor col(ImGuiCol_Button, ImVec4(0.18f, 0.55f, 0.35f, 1.0f), g_ed.paint_mode == TileMode::Slope);
+            char sl_btn[48];
+            std::snprintf(sl_btn, sizeof(sl_btn), "Slopes##%s", id_suffix);
+            if (ImGui::Button(sl_btn)) {
+                g_ed.paint_mode = TileMode::Slope;
+                g_ed.tileset_mode = TilesetSidebarMode::Slopes;
+                persist_settings();
+            }
+        }
+        ImGui::SameLine();
         if (g_ed.paint_mode == TileMode::Terrain) {
             char r_btn[48];
             std::snprintf(r_btn, sizeof(r_btn), "Reroll Variants##%s", id_suffix);
@@ -1726,6 +1746,47 @@ static void draw_tool_options_row() {
             }
             if (ImGui::IsItemHovered()) {
                 ImGui::SetTooltip("Rerolls variant chances across all terrain autotiles on the map");
+            }
+            ImGui::SameLine();
+        } else if (g_ed.paint_mode == TileMode::Slope) {
+            {
+                ScopedStyleColor col(ImGuiCol_Button, ImVec4(0.20f, 0.52f, 0.88f, 1.0f), g_ed.slope_size == SlopeSize::Slope1x1);
+                char btn1[48];
+                std::snprintf(btn1, sizeof(btn1), "1x1 Slope (45°)##%s", id_suffix);
+                if (ImGui::Button(btn1)) {
+                    g_ed.slope_size = SlopeSize::Slope1x1;
+                }
+            }
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("1x1 slope (45°). Automatically infers incline/decline from neighbors.");
+            }
+            ImGui::SameLine();
+            {
+                ScopedStyleColor col(ImGuiCol_Button, ImVec4(0.20f, 0.52f, 0.88f, 1.0f), g_ed.slope_size == SlopeSize::Slope2x1);
+                char btn2[48];
+                std::snprintf(btn2, sizeof(btn2), "2x1 Slope (26.5°)##%s", id_suffix);
+                if (ImGui::Button(btn2)) {
+                    g_ed.slope_size = SlopeSize::Slope2x1;
+                }
+            }
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("2x1 gentle slope (26.5°). Automatically infers incline/decline from neighbors.");
+            }
+            ImGui::SameLine();
+            char dirt_cb[48];
+            std::snprintf(dirt_cb, sizeof(dirt_cb), "Auto-fill Dirt##%s", id_suffix);
+            ImGui::Checkbox(dirt_cb, &g_ed.slope_auto_fill_dirt);
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("Automatically fills terrain underneath floor slopes or above ceiling slopes");
+            }
+            ImGui::SameLine();
+            char flip_btn[48];
+            std::snprintf(flip_btn, sizeof(flip_btn), "Flip [F]##%s", id_suffix);
+            if (ImGui::Button(flip_btn)) {
+                g_ed.slope_force_flip = !g_ed.slope_force_flip;
+            }
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("Inverts slope direction when drawing in open air (or press 'F')");
             }
             ImGui::SameLine();
         } else {
@@ -2165,7 +2226,37 @@ static void draw_canvas_viewport_content() {
             draw_list->AddRectFilled(ImVec2(bx0, by0), ImVec2(bx1, by1), IM_COL32(230, 50, 50, 80));
             draw_list->AddRect(ImVec2(bx0, by0), ImVec2(bx1, by1), IM_COL32(255, 80, 80, 220), 0.0f, 0, 1.5f);
         } else if (g_ed.tool == Tool::Paint || g_ed.tool == Tool::Line || (g_ed.tool == Tool::Rect && !g_ed.rect_fill)) {
-            if (has_texture && g_ed.paint_mode == TileMode::Stamp) {
+            if (has_texture && g_ed.paint_mode == TileMode::Slope) {
+                const SlopeType st = g_ed.doc.infer_slope_type(cell_x, cell_y, g_ed.slope_size, 0, 0, g_ed.slope_force_flip);
+                const int sw = slope_width(st);
+                const int scol = slope_base_col(st);
+                const int srow = Tileset::kSlopeRow;
+                for (int i = 0; i < sw; ++i) {
+                    const float u0 = static_cast<float>((scol + i) * ts) * inv_tex_w;
+                    const float v0 = static_cast<float>(srow * ts) * inv_tex_h;
+                    const float u1 = static_cast<float>((scol + i + 1) * ts) * inv_tex_w;
+                    const float v1 = static_cast<float>((srow + 1) * ts) * inv_tex_h;
+                    const float tx0 = cell_to_screen_x(cell_x + i);
+                    const float ty0 = cell_to_screen_y(cell_y);
+                    const float tx1 = cell_to_screen_x(cell_x + i + 1);
+                    const float ty1 = cell_to_screen_y(cell_y + 1);
+                    draw_list->AddImage(reinterpret_cast<ImTextureID>(g_ed.tileset_texture),
+                                        ImVec2(tx0, ty0), ImVec2(tx1, ty1),
+                                        ImVec2(u0, v0), ImVec2(u1, v1), IM_COL32(255, 255, 255, 180));
+                    draw_list->AddRect(ImVec2(tx0, ty0), ImVec2(tx1, ty1), IM_COL32(80, 200, 255, 220), 0.0f, 0, 1.5f);
+                }
+                if (g_ed.slope_auto_fill_dirt) {
+                    const bool is_fl = slope_is_floor(st);
+                    const int dy = is_fl ? 1 : -1;
+                    for (int i = 0; i < sw; ++i) {
+                        const float dx0 = cell_to_screen_x(cell_x + i);
+                        const float dy0 = cell_to_screen_y(cell_y + dy);
+                        const float dx1 = cell_to_screen_x(cell_x + i + 1);
+                        const float dy1 = cell_to_screen_y(cell_y + dy + 1);
+                        draw_list->AddRectFilled(ImVec2(dx0, dy0), ImVec2(dx1, dy1), IM_COL32(140, 100, 60, 80));
+                    }
+                }
+            } else if (has_texture && g_ed.paint_mode == TileMode::Stamp) {
                 const float u0 = static_cast<float>(g_ed.stamp_col * ts) * inv_tex_w;
                 const float v0 = static_cast<float>(g_ed.stamp_row * ts) * inv_tex_h;
                 const float u1 = static_cast<float>((g_ed.stamp_col + 1) * ts) * inv_tex_w;
@@ -2265,8 +2356,13 @@ static void draw_canvas_viewport_content() {
             }
         } else if (g_ed.tool == Tool::Paint && !g_ed.right_click_erasing) {
             g_ed.is_moving_selection = false;
-            g_ed.doc.begin_stroke(g_ed.paint_mode == TileMode::Terrain ? "Paint Terrain" : "Paint Stamp");
-            g_ed.doc.paint_cell(cell_x, cell_y, g_ed.paint_mode, g_ed.stamp_col, g_ed.stamp_row, g_ed.brush_size);
+            if (g_ed.paint_mode == TileMode::Slope) {
+                g_ed.doc.begin_stroke("Paint Slope");
+                g_ed.doc.paint_slope(cell_x, cell_y, g_ed.slope_size, g_ed.slope_auto_fill_dirt, 0, 0, g_ed.slope_force_flip);
+            } else {
+                g_ed.doc.begin_stroke(g_ed.paint_mode == TileMode::Terrain ? "Paint Terrain" : "Paint Stamp");
+                g_ed.doc.paint_cell(cell_x, cell_y, g_ed.paint_mode, g_ed.stamp_col, g_ed.stamp_row, g_ed.brush_size);
+            }
         } else if ((g_ed.tool == Tool::Erase || g_ed.right_click_erasing) && g_ed.tool != Tool::Line && g_ed.tool != Tool::Rect && g_ed.tool != Tool::Select) {
             g_ed.is_moving_selection = false;
             g_ed.doc.begin_stroke("Erase");
@@ -2335,6 +2431,10 @@ static void draw_canvas_viewport_content() {
                     }
                     if (g_ed.right_click_erasing || g_ed.tool == Tool::Erase) {
                         g_ed.doc.erase_cell(cx, cy, g_ed.brush_size);
+                    } else if (g_ed.paint_mode == TileMode::Slope) {
+                        const int drag_dx = cx - g_ed.last_painted_cell.x;
+                        const int drag_dy = cy - g_ed.last_painted_cell.y;
+                        g_ed.doc.paint_slope(cx, cy, g_ed.slope_size, g_ed.slope_auto_fill_dirt, drag_dx, drag_dy, g_ed.slope_force_flip);
                     } else {
                         g_ed.doc.paint_cell(cx, cy, g_ed.paint_mode, g_ed.stamp_col, g_ed.stamp_row, g_ed.brush_size);
                     }
@@ -2511,6 +2611,25 @@ static void draw_canvas_viewport_content() {
             } else if (g_ed.tool == Tool::Line) {
                 if (g_ed.right_click_erasing) {
                     g_ed.doc.erase_line(g_ed.drag_start.x, g_ed.drag_start.y, cell_x, cell_y, g_ed.brush_size);
+                } else if (g_ed.paint_mode == TileMode::Slope) {
+                    g_ed.doc.begin_stroke("Draw Slope Ramp");
+                    const int sx = g_ed.drag_start.x;
+                    const int sy = g_ed.drag_start.y;
+                    const int ex = cell_x;
+                    const int ey = cell_y;
+                    const int dx = ex - sx;
+                    const int dy = ey - sy;
+                    const int step_x = (dx >= 0) ? (g_ed.slope_size == SlopeSize::Slope2x1 ? 2 : 1) : (g_ed.slope_size == SlopeSize::Slope2x1 ? -2 : -1);
+                    const int step_y = (dy >= 0) ? 1 : -1;
+                    int cur_x = sx;
+                    int cur_y = sy;
+                    while (true) {
+                        g_ed.doc.paint_slope(cur_x, cur_y, g_ed.slope_size, g_ed.slope_auto_fill_dirt, dx, dy, g_ed.slope_force_flip);
+                        if ((dx >= 0 && cur_x >= ex) || (dx < 0 && cur_x <= ex)) break;
+                        cur_x += step_x;
+                        if ((dy >= 0 && cur_y < ey) || (dy < 0 && cur_y > ey)) cur_y += step_y;
+                    }
+                    g_ed.doc.end_stroke();
                 } else {
                     g_ed.doc.draw_line(g_ed.drag_start.x, g_ed.drag_start.y, cell_x, cell_y,
                                        g_ed.paint_mode, g_ed.stamp_col, g_ed.stamp_row, g_ed.brush_size);
@@ -2621,11 +2740,11 @@ static void draw_sidebar_tileset_page(SDL_Renderer* renderer) {
             ImGui::TextColored(ImVec4(0.4f, 0.85f, 0.4f, 1.0f), "Variants: %d active", static_cast<int>(g_ed.doc.tileset.variants.size()));
         }
 
-        // Mode Switcher: Stamp | Collision | Variants
+        // Mode Switcher: Stamp | Slopes | Variants | Collision
         ImGui::Spacing();
         {
             const float avail_w = ImGui::GetContentRegionAvail().x;
-            const float btn_w = std::floor((avail_w - 8.0f) / 3.0f);
+            const float btn_w = std::floor((avail_w - 12.0f) / 4.0f);
             {
                 ScopedStyleColor active_col(ImGuiCol_Button, ImVec4(0.20f, 0.52f, 0.88f, 1.0f), g_ed.tileset_mode == TilesetSidebarMode::Stamp);
                 if (ImGui::Button("Stamp", ImVec2(btn_w, 0))) {
@@ -2637,13 +2756,14 @@ static void draw_sidebar_tileset_page(SDL_Renderer* renderer) {
             }
             ImGui::SameLine(0, 4);
             {
-                ScopedStyleColor active_col(ImGuiCol_Button, ImVec4(0.20f, 0.52f, 0.88f, 1.0f), g_ed.tileset_mode == TilesetSidebarMode::Collision);
-                if (ImGui::Button("Collision", ImVec2(btn_w, 0))) {
-                    g_ed.tileset_mode = TilesetSidebarMode::Collision;
+                ScopedStyleColor active_col(ImGuiCol_Button, ImVec4(0.20f, 0.52f, 0.88f, 1.0f), g_ed.tileset_mode == TilesetSidebarMode::Slopes);
+                if (ImGui::Button("Slopes", ImVec2(btn_w, 0))) {
+                    g_ed.tileset_mode = TilesetSidebarMode::Slopes;
+                    g_ed.paint_mode = TileMode::Slope;
                 }
             }
             if (ImGui::IsItemHovered()) {
-                ImGui::SetTooltip("Paint or clear collision types on tileset tiles");
+                ImGui::SetTooltip("Slope drawing mode (1x1 and 2x1 with auto-orientation)");
             }
             ImGui::SameLine(0, 4);
             {
@@ -2654,6 +2774,16 @@ static void draw_sidebar_tileset_page(SDL_Renderer* renderer) {
             }
             if (ImGui::IsItemHovered()) {
                 ImGui::SetTooltip("Configure autotile terrain variants and spawn probabilities");
+            }
+            ImGui::SameLine(0, 4);
+            {
+                ScopedStyleColor active_col(ImGuiCol_Button, ImVec4(0.20f, 0.52f, 0.88f, 1.0f), g_ed.tileset_mode == TilesetSidebarMode::Collision);
+                if (ImGui::Button("Collision", ImVec2(btn_w, 0))) {
+                    g_ed.tileset_mode = TilesetSidebarMode::Collision;
+                }
+            }
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("Paint or clear collision types on tileset tiles");
             }
         }
 
@@ -2703,6 +2833,8 @@ static void draw_sidebar_tileset_page(SDL_Renderer* renderer) {
                     if (mouse.x >= x0 && mouse.x < x1 && mouse.y >= y0 && mouse.y < y1 && ImGui::IsWindowHovered()) {
                         if (g_ed.tileset_mode == TilesetSidebarMode::Stamp) {
                             dl->AddRect(ImVec2(x0, y0), ImVec2(x1, y1), IM_COL32(255, 255, 0, 255), 0.0f, 0, 2.0f);
+                        } else if (g_ed.tileset_mode == TilesetSidebarMode::Slopes) {
+                            dl->AddRect(ImVec2(x0, y0), ImVec2(x1, y1), IM_COL32(80, 200, 255, 255), 0.0f, 0, 2.0f);
                         } else if (g_ed.tileset_mode == TilesetSidebarMode::Collision) {
                             current_hover = {c, r};
                         } else if (g_ed.tileset_mode == TilesetSidebarMode::Variants) {
@@ -2710,7 +2842,12 @@ static void draw_sidebar_tileset_page(SDL_Renderer* renderer) {
                         }
                     }
 
-                    if (g_ed.tileset_mode == TilesetSidebarMode::Collision) {
+                    if (g_ed.tileset_mode == TilesetSidebarMode::Slopes) {
+                        if (r == Tileset::kSlopeRow) {
+                            dl->AddRectFilled(ImVec2(x0, y0), ImVec2(x1, y1), IM_COL32(80, 200, 255, 35));
+                            dl->AddRect(ImVec2(x0, y0), ImVec2(x1, y1), IM_COL32(80, 200, 255, 120), 0.0f, 0, 1.0f);
+                        }
+                    } else if (g_ed.tileset_mode == TilesetSidebarMode::Collision) {
                         const uint8_t col_id = g_ed.doc.tileset.get_tile_collision(c, r);
                         if (col_id != 0) {
                             const CollisionType* ct = g_ed.doc.get_collision_type(col_id);
@@ -2721,8 +2858,8 @@ static void draw_sidebar_tileset_page(SDL_Renderer* renderer) {
                     } else if (g_ed.tileset_mode == TilesetSidebarMode::Variants) {
                         const Cell sel = g_ed.selected_terrain_tile;
                         const bool is_sel = (c == sel.x && r == sel.y);
-                        const bool is_orig = (c < 12 && r < 4);
-                        const bool is_extra = (c >= 12);
+                        const bool is_orig = Tileset::is_base_origin_tile(c, r);
+                        const bool is_extra = Tileset::is_variant_tile(c, r);
                         const bool is_bound_var = g_ed.doc.tileset.is_variant(c, r);
                         const VariantBinding* sel_vb = g_ed.doc.tileset.find_variant(sel.x, sel.y);
 
@@ -2793,6 +2930,19 @@ static void draw_sidebar_tileset_page(SDL_Renderer* renderer) {
                             g_ed.stamp_row = hit_r;
                             g_ed.paint_mode = TileMode::Stamp;
                             g_ed.status_msg = "Selected Stamp Tile (" + std::to_string(hit_c) + ", " + std::to_string(hit_r) + ").";
+                        }
+                    } else if (g_ed.tileset_mode == TilesetSidebarMode::Slopes) {
+                        if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+                            g_ed.paint_mode = TileMode::Slope;
+                            if (hit_r == Tileset::kSlopeRow) {
+                                if (hit_c < 4) {
+                                    g_ed.slope_size = SlopeSize::Slope1x1;
+                                    g_ed.status_msg = "Selected 1x1 Slope (45 deg)";
+                                } else if (hit_c < 12) {
+                                    g_ed.slope_size = SlopeSize::Slope2x1;
+                                    g_ed.status_msg = "Selected 2x1 Slope (26.5 deg)";
+                                }
+                            }
                         }
                     } else if (g_ed.tileset_mode == TilesetSidebarMode::Collision) {
                         const bool left = ImGui::IsMouseDown(ImGuiMouseButton_Left);
@@ -3109,6 +3259,70 @@ static void draw_sidebar_tileset_page(SDL_Renderer* renderer) {
                 }
             }
             ImGui::EndChild();
+        } else if (g_ed.tileset_mode == TilesetSidebarMode::Slopes) {
+            ImGui::Spacing();
+            ImGui::Separator();
+            ImGui::TextColored(sec_hdr_col, "SLOPES MODE");
+            ImGui::Spacing();
+
+            ImGui::TextDisabled("Draw slopes with intelligent auto-orientation.");
+            ImGui::Spacing();
+
+            const float avail_w = ImGui::GetContentRegionAvail().x;
+            const float half_w = std::floor((avail_w - 4.0f) / 2.0f);
+
+            {
+                ScopedStyleColor active_col(ImGuiCol_Button, ImVec4(0.20f, 0.52f, 0.88f, 1.0f), g_ed.slope_size == SlopeSize::Slope1x1 && g_ed.paint_mode == TileMode::Slope);
+                if (ImGui::Button("1x1 Slope (45 deg)", ImVec2(half_w, 32.0f * g_ed.settings.scale))) {
+                    g_ed.slope_size = SlopeSize::Slope1x1;
+                    g_ed.paint_mode = TileMode::Slope;
+                }
+            }
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("1x1 slope tile (Row 4, Cols 0..3). Direction auto-aligns with neighbors.");
+            }
+            ImGui::SameLine(0, 4);
+            {
+                ScopedStyleColor active_col(ImGuiCol_Button, ImVec4(0.20f, 0.52f, 0.88f, 1.0f), g_ed.slope_size == SlopeSize::Slope2x1 && g_ed.paint_mode == TileMode::Slope);
+                if (ImGui::Button("2x1 Slope (26.5 deg)", ImVec2(half_w, 32.0f * g_ed.settings.scale))) {
+                    g_ed.slope_size = SlopeSize::Slope2x1;
+                    g_ed.paint_mode = TileMode::Slope;
+                }
+            }
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("2x1 gentle slope tiles (Row 4, Cols 4..11). Direction auto-aligns with neighbors.");
+            }
+
+            ImGui::Spacing();
+            ImGui::Checkbox("Auto-fill Dirt Beneath Slopes", &g_ed.slope_auto_fill_dirt);
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("When placing floor slopes, automatically place autotile terrain dirt in the cell below.");
+            }
+
+            ImGui::Spacing();
+            {
+                ScopedStyleColor flip_col(ImGuiCol_Button, ImVec4(0.85f, 0.45f, 0.15f, 1.0f), g_ed.slope_force_flip);
+                if (ImGui::Button(g_ed.slope_force_flip ? "Orientation: Flipped [F]" : "Orientation: Normal [F]", ImVec2(-1, 0))) {
+                    g_ed.slope_force_flip = !g_ed.slope_force_flip;
+                }
+            }
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("Invert incline/decline and floor/ceiling inference. Shortcut: Press 'F'");
+            }
+
+            ImGui::Spacing();
+            ImGui::Separator();
+            ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "SLOPE ROW STATUS");
+            if (g_ed.doc.tileset.has_slope_row()) {
+                ImGui::TextColored(ImVec4(0.4f, 0.85f, 0.4f, 1.0f), "Row 4: Slopes present (%d cols)", g_ed.doc.tileset.cols);
+            } else {
+                ImGui::TextColored(ImVec4(0.9f, 0.6f, 0.2f, 1.0f), "No slope row in current tileset (%d rows).", g_ed.doc.tileset.rows);
+                if (ImGui::Button("+ Ensure Slope Row in Tileset", ImVec2(-1, 0))) {
+                    g_ed.doc.tileset.ensure_slope_row();
+                    g_ed.doc.mark_dirty();
+                    g_ed.status_msg = "Added slope row (Row 4) to tileset.";
+                }
+            }
         }
     } else {
         ImGui::Spacing();
@@ -3834,6 +4048,10 @@ int run_editor() {
                     if (ImGui::IsKeyPressed(ImGuiKey_5)) g_ed.tool = Tool::Fill;
                     if (ImGui::IsKeyPressed(ImGuiKey_6)) g_ed.tool = Tool::Select;
                     if (ImGui::IsKeyPressed(ImGuiKey_7)) g_ed.tool = Tool::Eyedropper;
+                    if (ImGui::IsKeyPressed(ImGuiKey_F)) {
+                        g_ed.slope_force_flip = !g_ed.slope_force_flip;
+                        g_ed.status_msg = g_ed.slope_force_flip ? "Slope orientation flipped" : "Slope orientation normal";
+                    }
                 }
             }
         } else {

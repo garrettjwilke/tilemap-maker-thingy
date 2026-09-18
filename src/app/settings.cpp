@@ -89,7 +89,7 @@ std::string format_settings(const Settings& s) {
     ss << "collision_overlay=" << (s.collision_overlay ? "true" : "false") << "\n";
     ss << "zoom=" << s.zoom << "\n";
     ss << "brush_size=" << s.brush_size << "\n";
-    ss << "paint_mode=" << (s.paint_mode == 1 ? "stamp" : "terrain") << "\n";
+    ss << "paint_mode=" << (s.paint_mode == 2 ? "slope" : (s.paint_mode == 1 ? "stamp" : "terrain")) << "\n";
     ss << "sidebar_page=" << s.sidebar_page << "\n";
     ss << "export_map_proj=" << (s.export_map_proj ? "true" : "false") << "\n";
     ss << "export_col_json=" << (s.export_col_json ? "true" : "false") << "\n";
@@ -130,7 +130,7 @@ bool parse_settings_text(Settings& s, const std::string& text) {
         else if (key == "collision_overlay") s.collision_overlay = (val == "true" || val == "1");
         else if (key == "zoom") s.zoom = std::clamp(std::strtof(val.c_str(), nullptr), 0.25f, 16.0f);
         else if (key == "brush_size") s.brush_size = std::clamp(std::atoi(val.c_str()), 1, 4);
-        else if (key == "paint_mode") s.paint_mode = (val == "stamp" || val == "1") ? 1 : 0;
+        else if (key == "paint_mode") s.paint_mode = (val == "slope" || val == "2") ? 2 : ((val == "stamp" || val == "1") ? 1 : 0);
         else if (key == "sidebar_page") s.sidebar_page = std::clamp(std::atoi(val.c_str()), 0, 2);
         else if (key == "export_map_proj") s.export_map_proj = (val == "true" || val == "1");
         else if (key == "export_col_json") s.export_col_json = (val == "true" || val == "1");

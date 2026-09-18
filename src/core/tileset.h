@@ -67,6 +67,9 @@ class Tileset {
 public:
     static constexpr int kBaseCols = 12;
     static constexpr int kBaseRows = 4;
+    static constexpr int kSlopeRow = 4;
+    static constexpr int kSlopeRows = 1;
+    static constexpr int kVariantStartRow = 5;
     static constexpr int kDefaultCenterCol = 9;
     static constexpr int kDefaultCenterRow = 2;
 
@@ -122,8 +125,18 @@ public:
     }
 
     bool is_extra(int col, int row) const {
-        return col >= kBaseCols || row >= kBaseRows;
+        return is_variant_tile(col, row) || (row >= kBaseRows && !is_slope_tile(col, row));
     }
+
+    bool has_slopes() const {
+        return rows > kSlopeRow;
+    }
+
+    bool has_slope_row() const {
+        return has_slopes();
+    }
+
+    void ensure_slope_row();
 
     uint8_t get_pixel(int col, int row, int px, int py) const;
     std::vector<uint8_t> get_tile_pixels(int col, int row) const;
@@ -150,8 +163,11 @@ public:
     static bool is_base_origin_tile(int col, int row) {
         return col >= 0 && col < kBaseCols && row >= 0 && row < kBaseRows;
     }
+    static bool is_slope_tile(int col, int row) {
+        return col >= 0 && col < kBaseCols && row == kSlopeRow;
+    }
     static bool is_variant_tile(int col, int row) {
-        return col >= kBaseCols && row >= 0;
+        return (row >= kVariantStartRow) || (col >= kBaseCols && row >= 0);
     }
     std::vector<VariantBinding> variants_for_root(int root_x, int root_y) const;
     const VariantBinding* find_variant(int x, int y) const;

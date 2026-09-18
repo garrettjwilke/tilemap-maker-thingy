@@ -248,7 +248,7 @@ static std::string render_map_json_text(const TilemapDoc& doc, const std::string
             ss << "\t\t\t\"source\": 0,\n";
             ss << "\t\t\t\"atlas_x\": " << c.atlas_x << ",\n";
             ss << "\t\t\t\"atlas_y\": " << c.atlas_y << ",\n";
-            ss << "\t\t\t\"mode\": \"" << (c.mode == TileMode::Terrain ? "terrain" : "stamp") << "\",\n";
+            ss << "\t\t\t\"mode\": \"" << (c.mode == TileMode::Terrain ? "terrain" : (c.mode == TileMode::Slope ? "slope" : "stamp")) << "\",\n";
             ss << "\t\t\t\"roll\": " << c.roll << ",\n";
             ss << "\t\t\t\"alt\": 0\n";
             ss << "\t\t}";
@@ -478,8 +478,12 @@ static std::string load_map_json_from_text(TilemapDoc& doc, const std::string& t
                     mc.mode = TileMode::Stamp;
                 } else if (mode_str == "terrain") {
                     mc.mode = TileMode::Terrain;
+                } else if (mode_str == "slope") {
+                    mc.mode = TileMode::Slope;
                 } else {
-                    if (ay < 4 && ax < doc.tileset.cols) {
+                    if (ay == 4 && ax < 12) {
+                        mc.mode = TileMode::Slope;
+                    } else if (ay < 4 && ax < doc.tileset.cols) {
                         mc.mode = TileMode::Terrain;
                     } else {
                         mc.mode = TileMode::Stamp;

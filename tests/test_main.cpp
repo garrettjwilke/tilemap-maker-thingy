@@ -1559,7 +1559,7 @@ void test_tileset_maker_integration() {
 
         Tileset ts;
         ts.cols = atlas.cols;
-        ts.rows = tsm::AtlasDoc::kRows;
+        ts.rows = atlas.rows;
         ts.tile_size = atlas.tile_size;
         ts.palette.clear();
         for (const auto& c : atlas.palette) {
@@ -1592,12 +1592,13 @@ void test_tileset_maker_integration() {
         }
 
         expect(ts.is_valid(), "synced tileset is valid");
-        expect(ts.cols == 13, "synced tileset has 13 cols");
-        expect(ts.rows == 4, "synced tileset has 4 rows");
+        expect(ts.cols == 12, "synced tileset has 12 cols");
+        expect(ts.rows == 6, "synced tileset has 6 rows (4 base + 1 slope + 1 variant)");
         expect(ts.tile_size == 16, "synced tileset has 16px tiles");
         expect(ts.palette.size() == 2, "palette has 2 colors");
         expect(ts.palette[0] == Rgb{10, 20, 30}, "palette color 0 matches");
         expect(ts.variants.size() == 1, "variant count matches");
+        expect(ts.variants[0].x == 0 && ts.variants[0].y == 5, "variant placed in bottom variant row 5");
         expect(ts.variants[0].root_x == 9 && ts.variants[0].root_y == 2, "variant root matches");
         expect(std::abs(ts.variants[0].probability - 0.40f) < 0.01f, "variant probability matches");
 
@@ -2203,6 +2204,151 @@ void test_map_project_tmproj() {
     std::remove(dummy_bad.c_str());
 }
 
+static void test_slopes_and_layout() {
+    using namespace tmm;
+    // 1. Layout checks: Row 4 reserved for slopes, Row 5+ for variants
+    {
+        expect(Tileset::kSlopeRow == 4, "Slope row is strictly row 4");
+        expect(Tileset::kVariantStartRow == 5, "Variant start row is 5");
+
+        // Base origin tiles (0..11, 0..3)
+        expect(Tileset::is_base_origin_tile(0, 0), "(0,0) is base origin");
+        expect(Tileset::is_base_origin_tile(11, 3), "(11,3) is base origin");
+        expect(!Tileset::is_base_origin_tile(0, 4), "(0,4) is NOT base origin");
+        expect(!Tileset::is_base_origin_tile(0, 5), "(0,5) is NOT base origin");
+
+        // Slope tiles (0..11, 4)
+        expect(Tileset::is_slope_tile(0, 4), "(0,4) is slope tile");
+        expect(Tileset::is_slope_tile(11, 4), "(11,4) is slope tile");
+        expect(!Tileset::is_slope_tile(12, 4), "(12,4) is not slope tile");
+        expect(!Tileset::is_slope_tile(0, 3), "(0,3) is not slope tile");
+        expect(!Tileset::is_slope_tile(0, 5), "(0,5) is not slope tile");
+
+        // Bottom variant tiles (row 5+)
+        expect(Tileset::is_variant_tile(0, 5), "(0,5) is variant tile");
+        expect(Tileset::is_variant_tile(11, 6), "(11,6) is variant tile");
+        expect(!Tileset::is_variant_tile(0, 4), "(0,4) is NOT variant tile");
+
+        // ensure_slope_row
+        Tileset ts;
+        ts.cols = 12;
+        ts.rows = 4;
+        ts.tile_size = 16;
+        ts.pixels.resize(12 * 4 * 16 * 16, 0);
+        expect(!ts.has_slope_row(), "4-row tileset has no slope row initially");
+        ts.ensure_slope_row();
+        expect(ts.has_slope_row(), "after ensure_slope_row, tileset has slope row");
+        expect(ts.rows == 5, "tileset rows grew to 5");
+    }
+
+    // 2. Slope type inference and painting (1x1 and 2x1)
+    {
+        TilemapDoc doc;
+        doc.reset(20, 20, 16);
+        doc.tileset.cols = 12;
+        doc.tileset.rows = 5;
+        doc.tileset.tile_size = 16;
+        doc.tileset.pixels.resize(12 * 5 * 16 * 16, 0);
+
+        // A. Incline Floor 1x1: dragging up-right (dx=1, dy=-1)
+        SlopeType st = doc.infer_slope_type(5, 5, SlopeSize::Slope1x1, 1, -1, false);
+        expect(st == SlopeType::FloorIncline1x1, "dx=1, dy=-1 infers FloorIncline1x1");
+        expect(slope_is_floor(st), "FloorIncline is floor slope");
+        expect(slope_is_incline(st), "FloorIncline is incline");
+
+        // B. Decline Floor 1x1: dragging down-right (dx=1, dy=1)
+        st = doc.infer_slope_type(5, 5, SlopeSize::Slope1x1, 1, 1, false);
+        expect(st == SlopeType::FloorDecline1x1, "dx=1, dy=1 infers FloorDecline1x1");
+        expect(slope_is_floor(st), "FloorDecline is floor slope");
+        expect(!slope_is_incline(st), "FloorDecline is not incline");
+
+        // C. Flip toggle
+        st = doc.infer_slope_type(5, 5, SlopeSize::Slope1x1, 1, -1, true);
+        expect(st == SlopeType::FloorDecline1x1, "flip toggles FloorIncline to FloorDecline");
+
+        // D. Adjacency inference:
+        // Solid ground on left (x-1, y) leads to a declining ramp (\)
+        doc.paint_cell(4, 5, TileMode::Terrain);
+        st = doc.infer_slope_type(5, 5, SlopeSize::Slope1x1, 0, 0, false);
+        expect(st == SlopeType::FloorDecline1x1, "solid ground neighbor on left infers decline ramp");
+
+        // Solid ground on right (x+1, y) leads to an incline ramp (/)
+        doc.erase_cell(4, 5);
+        doc.paint_cell(6, 5, TileMode::Terrain);
+        st = doc.infer_slope_type(5, 5, SlopeSize::Slope1x1, 0, 0, false);
+        expect(st == SlopeType::FloorIncline1x1, "solid ground neighbor on right infers incline ramp");
+
+        // Paint 1x1 slope with auto-fill dirt at (5, 5) - connects to solid ground on right
+        doc.paint_slope(5, 5, SlopeSize::Slope1x1, true, 0, 0, false);
+        expect(doc.is_slope(5, 5), "cell (5,5) is slope");
+        const MapCell& c55 = doc.get_cell(5, 5);
+        expect(c55.mode == TileMode::Slope, "cell (5,5) mode is Slope");
+        expect(c55.atlas_x == 0 && c55.atlas_y == 4, "FloorIncline1x1 maps to tile (0, 4)");
+
+        // Check auto-fill dirt placed at (5, 6)
+        const MapCell& c56 = doc.get_cell(5, 6);
+        expect(c56.mode == TileMode::Terrain, "dirt placed at (5,6) beneath floor slope");
+
+        // E. Paint 2x1 slope at (8, 5)
+        doc.paint_slope(8, 5, SlopeSize::Slope2x1, false, 1, -1, false);
+        expect(doc.is_slope(8, 5), "(8,5) is slope");
+        expect(doc.is_slope(9, 5), "(9,5) is partner slope");
+        const MapCell& c8 = doc.get_cell(8, 5);
+        const MapCell& c9 = doc.get_cell(9, 5);
+        expect(c8.atlas_x == 4 && c8.atlas_y == 4, "first half of 2x1 Floor Incline is (4, 4)");
+        expect(c9.atlas_x == 5 && c9.atlas_y == 4, "second half of 2x1 Floor Incline is (5, 4)");
+
+        // Erase 2x1 slope
+        doc.erase_slope(8, 5);
+        expect(!doc.is_slope(8, 5), "(8,5) erased");
+        expect(!doc.is_slope(9, 5), "partner (9,5) also erased");
+    }
+
+    // 3. Terrain flushness against slopes (is_solid_for_terrain)
+    {
+        TilemapDoc doc;
+        doc.reset(10, 10, 16);
+        // Paint FloorIncline (/) at (5, 5)
+        doc.paint_slope_explicit(5, 5, SlopeType::FloorIncline1x1, false);
+
+        // FloorIncline (/) is solid on bottom face: from (5, 6) looking at target (5, 5)
+        expect(doc.is_solid_for_terrain(5, 5, 5, 6), "slope bottom edge is solid to neighbor below");
+        // FloorIncline (/) is solid on right (high) face: from (6, 5) looking at target (5, 5)
+        expect(doc.is_solid_for_terrain(5, 5, 6, 5), "slope right high edge is solid to neighbor on right");
+        // FloorIncline (/) is open on top face: from (5, 4) looking at target (5, 5)
+        expect(!doc.is_solid_for_terrain(5, 5, 5, 4), "slope top edge is open");
+        // FloorIncline (/) is low on left face: from (4, 5) looking at target (5, 5)
+        expect(!doc.is_solid_for_terrain(5, 5, 4, 5), "slope left low edge is open");
+    }
+
+    // 4. Save and load map JSON with slopes
+    {
+        TilemapDoc doc;
+        doc.reset(10, 10, 16);
+        doc.name = "SlopeMap";
+        doc.paint_slope_explicit(3, 3, SlopeType::FloorIncline1x1, false);
+        doc.paint_slope_explicit(6, 6, SlopeType::FloorDecline2x1, false);
+
+        const std::string test_json_path = temp_path("test_slope_map.json");
+        std::string save_err = save_map_json(doc, test_json_path);
+        expect(save_err.empty(), "save_map_json succeeded");
+
+        // Verify JSON content has "slope" mode
+        std::ifstream ifs(test_json_path);
+        std::string json_str((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
+        expect(json_str.find("\"mode\": \"slope\"") != std::string::npos || json_str.find("\"mode\":\"slope\"") != std::string::npos, "serialized JSON contains slope mode");
+
+        TilemapDoc loaded;
+        const std::string err = load_map_json(loaded, test_json_path);
+        expect(err.empty(), "loading map JSON succeeded");
+        expect(loaded.is_slope(3, 3), "loaded map has slope at (3, 3)");
+        expect(loaded.is_slope(6, 6), "loaded map has slope at (6, 6)");
+        expect(loaded.is_slope(7, 6), "loaded map has 2x1 slope partner at (7, 6)");
+
+        std::remove(test_json_path.c_str());
+    }
+}
+
 } // namespace
 
 int main() {
@@ -2234,6 +2380,7 @@ int main() {
     test_zip_export();
     test_zip_reader();
     test_map_project_tmproj();
+    test_slopes_and_layout();
 
     if (g_fails) {
         std::cerr << g_fails << " test(s) failed\n";

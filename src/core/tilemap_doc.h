@@ -9,7 +9,49 @@
 
 namespace tmm {
 
-enum class TileMode { Empty, Stamp, Terrain };
+enum class TileMode { Empty, Stamp, Terrain, Slope };
+
+enum class SlopeSize { Slope1x1 = 0, Slope2x1 = 1 };
+
+enum class SlopeType {
+    FloorIncline1x1 = 0,   // Col 0, Row 4 (/)
+    FloorDecline1x1 = 1,   // Col 1, Row 4 (\)
+    CeilingIncline1x1 = 2, // Col 2, Row 4 (/)
+    CeilingDecline1x1 = 3, // Col 3, Row 4 (\)
+    FloorIncline2x1 = 4,   // Cols 4..5, Row 4 (//)
+    FloorDecline2x1 = 5,   // Cols 6..7, Row 4 (\\)
+    CeilingIncline2x1 = 6, // Cols 8..9, Row 4 (//)
+    CeilingDecline2x1 = 7  // Cols 10..11, Row 4 (\\)
+};
+
+inline bool slope_is_floor(SlopeType s) {
+    return s == SlopeType::FloorIncline1x1 || s == SlopeType::FloorDecline1x1 ||
+           s == SlopeType::FloorIncline2x1 || s == SlopeType::FloorDecline2x1;
+}
+
+inline bool slope_is_incline(SlopeType s) {
+    return s == SlopeType::FloorIncline1x1 || s == SlopeType::CeilingIncline1x1 ||
+           s == SlopeType::FloorIncline2x1 || s == SlopeType::CeilingIncline2x1;
+}
+
+inline int slope_base_col(SlopeType s) {
+    switch (s) {
+        case SlopeType::FloorIncline1x1:   return 0;
+        case SlopeType::FloorDecline1x1:   return 1;
+        case SlopeType::CeilingIncline1x1: return 2;
+        case SlopeType::CeilingDecline1x1: return 3;
+        case SlopeType::FloorIncline2x1:   return 4;
+        case SlopeType::FloorDecline2x1:   return 6;
+        case SlopeType::CeilingIncline2x1: return 8;
+        case SlopeType::CeilingDecline2x1: return 10;
+    }
+    return 0;
+}
+
+inline int slope_width(SlopeType s) {
+    return (s == SlopeType::FloorIncline2x1 || s == SlopeType::FloorDecline2x1 ||
+            s == SlopeType::CeilingIncline2x1 || s == SlopeType::CeilingDecline2x1) ? 2 : 1;
+}
 
 struct MapCell {
     TileMode mode = TileMode::Empty;
@@ -105,6 +147,17 @@ public:
         if (!in_bounds(x, y)) return false;
         return get_cell(x, y).mode == TileMode::Terrain;
     }
+
+    bool is_slope(int x, int y) const {
+        if (!in_bounds(x, y)) return false;
+        return get_cell(x, y).mode == TileMode::Slope;
+    }
+
+    bool is_solid_for_terrain(int target_x, int target_y, int from_x, int from_y) const;
+    SlopeType infer_slope_type(int x, int y, SlopeSize size, int drag_dx = 0, int drag_dy = 0, bool force_flip = false) const;
+    void paint_slope(int x, int y, SlopeSize size, bool fill_dirt = true, int drag_dx = 0, int drag_dy = 0, bool force_flip = false);
+    void paint_slope_explicit(int x, int y, SlopeType type, bool fill_dirt = true);
+    void erase_slope(int x, int y);
 
     // Drawing operations
     void paint_cell(int x, int y, TileMode mode, int stamp_col = -1, int stamp_row = -1, int brush_size = 1);

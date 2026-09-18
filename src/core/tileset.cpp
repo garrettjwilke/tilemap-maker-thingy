@@ -135,8 +135,8 @@ bool Tileset::set_variant(int x, int y, int root_x, int root_y, float probabilit
         remove_variant(x, y);
         return false;
     }
-    // The main 12x4 tiles must always be origins, and only the extra tiles (col >= 12) can be variants!
-    if (!is_variant_tile(x, y) || !is_base_origin_tile(root_x, root_y)) return false;
+    // Only variant tiles (row >= 5 or col >= 12) can be variants, and neither can be slope tiles (row == 4)
+    if (!is_variant_tile(x, y) || is_variant_tile(root_x, root_y) || is_slope_tile(x, y) || is_slope_tile(root_x, root_y)) return false;
     probability = std::clamp(probability, 0.01f, 1.0f);
     VariantBinding* existing = find_variant(x, y);
     if (existing) {
@@ -180,11 +180,36 @@ void Tileset::clear_variants() {
 }
 
 void Tileset::auto_bind_extra_columns(int root_x, int root_y, float probability) {
-    if (cols <= kBaseCols) return;
-    for (int c = kBaseCols; c < cols; ++c) {
-        for (int r = 0; r < rows; ++r) {
-            set_variant(c, r, root_x, root_y, probability);
+    if (cols > kBaseCols) {
+        for (int c = kBaseCols; c < cols; ++c) {
+            for (int r = 0; r < rows; ++r) {
+                set_variant(c, r, root_x, root_y, probability);
+            }
         }
+    }
+    if (rows >= kVariantStartRow) {
+        for (int r = kVariantStartRow; r < rows; ++r) {
+            for (int c = 0; c < cols; ++c) {
+                set_variant(c, r, root_x, root_y, probability);
+            }
+        }
+    }
+}
+
+void Tileset::ensure_slope_row() {
+    if (rows > kSlopeRow) return;
+    const int new_rows = kSlopeRow + 1; // at least 5 rows
+    const int old_w = cols * tile_size;
+    const int old_h = rows * tile_size;
+    const int new_h = new_rows * tile_size;
+    std::vector<uint8_t> new_pixels(static_cast<size_t>(old_w * new_h), 0);
+    if (!pixels.empty()) {
+        std::memcpy(new_pixels.data(), pixels.data(), std::min(pixels.size(), static_cast<size_t>(old_w * old_h)));
+    }
+    pixels = std::move(new_pixels);
+    rows = new_rows;
+    if (tile_collisions.size() < static_cast<size_t>(cols * rows)) {
+        tile_collisions.resize(static_cast<size_t>(cols * rows), 1);
     }
 }
 
@@ -291,33 +316,42 @@ bool Tileset::load_png_raw(const std::string& path) {
         return false;
     }
 
-    // Determine tile size: 4 rows standard.
-    if (im.h % kBaseRows != 0) {
-        image_free(&im);
-        error = "PNG height must be a multiple of 4";
-        return false;
+    // Determine tile size: 16px preferred, then 8px, based on divisibility and standard 12-column width
+    int detected_ts = 16;
+    if (im.w % 16 == 0 && im.h % 16 == 0 && (im.w / 16 >= static_cast<unsigned>(kBaseCols)) && (im.h / 16 >= static_cast<unsigned>(kBaseRows))) {
+        detected_ts = 16;
+    } else if (im.w % 8 == 0 && im.h % 8 == 0 && (im.w / 8 >= static_cast<unsigned>(kBaseCols)) && (im.h / 8 >= static_cast<unsigned>(kBaseRows))) {
+        detected_ts = 8;
+    } else if (im.w % kBaseCols == 0) {
+        const int ts = static_cast<int>(im.w / kBaseCols);
+        if (ts == 8 || ts == 16) {
+            detected_ts = ts;
+        } else {
+            detected_ts = 16;
+        }
     }
-    const int detected_ts = static_cast<int>(im.h / kBaseRows);
-    if (detected_ts != 8 && detected_ts != 16) {
+
+    if (im.w % static_cast<unsigned>(detected_ts) != 0 || im.h % static_cast<unsigned>(detected_ts) != 0) {
         image_free(&im);
-        error = "Tiles must be 8x8 or 16x16 (height must be 32 or 64)";
-        return false;
-    }
-    if (im.w % static_cast<unsigned>(detected_ts) != 0) {
-        image_free(&im);
-        error = "PNG width must be a multiple of tile size";
+        error = "PNG dimensions must be a multiple of tile size (" + std::to_string(detected_ts) + ")";
         return false;
     }
     const int w_cols = static_cast<int>(im.w / static_cast<unsigned>(detected_ts));
+    const int h_rows = static_cast<int>(im.h / static_cast<unsigned>(detected_ts));
     if (w_cols < kBaseCols) {
         image_free(&im);
         error = "PNG must be at least 12 tiles wide";
         return false;
     }
+    if (h_rows < kBaseRows) {
+        image_free(&im);
+        error = "PNG must be at least 4 tiles high";
+        return false;
+    }
 
     tile_size = detected_ts;
     cols = w_cols;
-    rows = kBaseRows;
+    rows = h_rows;
     png_path = path;
     if (tile_collisions.size() != static_cast<size_t>(cols * rows)) {
         init_tile_collisions(1);
@@ -515,21 +549,11 @@ bool Tileset::load_png_file(const std::string& path) {
         }
     }
 
-    // Auto-detection fallback: If cols > 12, extra columns are variations of center tile (9, 2)
-    if (!found && cols > kBaseCols) {
+    // Auto-detection fallback: If extra columns (cols > 12) or bottom variant rows (rows >= 5)
+    if (!found && (cols > kBaseCols || rows >= kVariantStartRow)) {
         variants.clear();
-        for (int c = kBaseCols; c < cols; ++c) {
-            for (int r = 0; r < rows; ++r) {
-                VariantBinding b;
-                b.x = c;
-                b.y = r;
-                b.root_x = kDefaultCenterCol;
-                b.root_y = kDefaultCenterRow;
-                b.probability = 1.0f;
-                variants.push_back(b);
-            }
-        }
-        terrain_path = "[auto-detected extra columns]";
+        auto_bind_extra_columns(kDefaultCenterCol, kDefaultCenterRow, 1.0f);
+        terrain_path = "[auto-detected extra tiles]";
         found = true;
     }
 

@@ -200,19 +200,206 @@ bool TilemapDoc::redo() {
     return true;
 }
 
+bool TilemapDoc::is_solid_for_terrain(int target_x, int target_y, int from_x, int from_y) const {
+    if (!in_bounds(target_x, target_y)) return false;
+    const MapCell& c = get_cell(target_x, target_y);
+    if (c.mode == TileMode::Terrain) return true;
+    if (c.mode == TileMode::Empty) return false;
+    if (c.mode == TileMode::Stamp) return false;
+
+    if (c.mode == TileMode::Slope) {
+        const int col = c.atlas_x;
+        const int row = c.atlas_y;
+        if (row != Tileset::kSlopeRow) return false;
+
+        const int dx = from_x - target_x;
+        const int dy = from_y - target_y;
+
+        const bool is_floor = (col == 0 || col == 1 || (col >= 4 && col <= 7));
+        const bool is_ceiling = (col == 2 || col == 3 || (col >= 8 && col <= 11));
+
+        // 1. Below a floor slope (dy > 0) is solid dirt
+        if (is_floor && dy > 0) return true;
+
+        // 2. Above a ceiling slope (dy < 0) is solid dirt
+        if (is_ceiling && dy < 0) return true;
+
+        // 3. Horizontal connections at same row (dy == 0)
+        if (dy == 0) {
+            // from_x is to the RIGHT of the slope (dx == 1)
+            if (dx == 1) {
+                // Slopes that are full-height at their right edge:
+                // Floor Incline 1x1 (0), Floor Incline 2x1 high part (5),
+                // Ceiling Incline 1x1 (2), Ceiling Incline 2x1 high part (9)
+                return (col == 0 || col == 5 || col == 2 || col == 9);
+            }
+            // from_x is to the LEFT of the slope (dx == -1)
+            if (dx == -1) {
+                // Slopes that are full-height at their left edge:
+                // Floor Decline 1x1 (1), Floor Decline 2x1 high part (6),
+                // Ceiling Decline 1x1 (3), Ceiling Decline 2x1 high part (10)
+                return (col == 1 || col == 6 || col == 3 || col == 10);
+            }
+        }
+
+        // 4. Diagonal connections beneath floor slopes are solid
+        if (is_floor && dy == 1) {
+            if (dx == 1 && (col == 0 || col == 5)) return true;
+            if (dx == -1 && (col == 1 || col == 6)) return true;
+            if (dx == 0) return true;
+        }
+        // Upward diagonals above ceiling slopes are solid
+        if (is_ceiling && dy == -1) {
+            if (dx == 1 && (col == 2 || col == 9)) return true;
+            if (dx == -1 && (col == 3 || col == 10)) return true;
+            if (dx == 0) return true;
+        }
+    }
+    return false;
+}
+
+SlopeType TilemapDoc::infer_slope_type(int x, int y, SlopeSize size, int drag_dx, int drag_dy, bool force_flip) const {
+    // 1. Determine Floor vs Ceiling
+    bool is_floor = true;
+    const bool solid_below = is_terrain(x, y + 1) || (size == SlopeSize::Slope2x1 && is_terrain(x + 1, y + 1));
+    const bool solid_above = is_terrain(x, y - 1) || (size == SlopeSize::Slope2x1 && is_terrain(x + 1, y - 1));
+
+    if (!solid_below && solid_above) {
+        is_floor = false;
+    } else {
+        is_floor = true; // Default to floor slope
+    }
+
+    // 2. Determine Incline vs Decline
+    bool is_incline = true;
+    const int step_w = (size == SlopeSize::Slope2x1) ? 2 : 1;
+    const bool solid_right = is_terrain(x + step_w, y);
+    const bool solid_left = is_terrain(x - 1, y);
+
+    if (solid_right && !solid_left) {
+        is_incline = true; // Connects up to right
+    } else if (solid_left && !solid_right) {
+        is_incline = false; // Connects down from left
+    } else if (drag_dx != 0 || drag_dy != 0) {
+        // Use mouse drag vector
+        if (is_floor) {
+            if (drag_dx > 0 && drag_dy < 0) is_incline = true;  // moving right-up -> incline
+            else if (drag_dx > 0 && drag_dy > 0) is_incline = false; // moving right-down -> decline
+            else if (drag_dx < 0 && drag_dy > 0) is_incline = true;  // moving left-down -> incline
+            else if (drag_dx < 0 && drag_dy < 0) is_incline = false; // moving left-up -> decline
+            else if (drag_dx > 0) is_incline = true;
+            else if (drag_dx < 0) is_incline = false;
+        } else { // ceiling
+            if (drag_dx > 0 && drag_dy > 0) is_incline = true;
+            else if (drag_dx > 0 && drag_dy < 0) is_incline = false;
+            else if (drag_dx > 0) is_incline = true;
+            else if (drag_dx < 0) is_incline = false;
+        }
+    } else {
+        // Fallback: check low-ground diagonals
+        if (is_floor) {
+            const bool low_left = is_terrain(x - 1, y + 1);
+            const bool low_right = is_terrain(x + step_w, y + 1);
+            if (low_left && !low_right) is_incline = true;
+            else if (low_right && !low_left) is_incline = false;
+            else is_incline = true;
+        } else {
+            is_incline = true;
+        }
+    }
+
+    if (force_flip) {
+        is_incline = !is_incline;
+    }
+
+    if (size == SlopeSize::Slope1x1) {
+        if (is_floor) return is_incline ? SlopeType::FloorIncline1x1 : SlopeType::FloorDecline1x1;
+        else          return is_incline ? SlopeType::CeilingIncline1x1 : SlopeType::CeilingDecline1x1;
+    } else {
+        if (is_floor) return is_incline ? SlopeType::FloorIncline2x1 : SlopeType::FloorDecline2x1;
+        else          return is_incline ? SlopeType::CeilingIncline2x1 : SlopeType::CeilingDecline2x1;
+    }
+}
+
+void TilemapDoc::paint_slope(int x, int y, SlopeSize size, bool fill_dirt, int drag_dx, int drag_dy, bool force_flip) {
+    SlopeType type = infer_slope_type(x, y, size, drag_dx, drag_dy, force_flip);
+    paint_slope_explicit(x, y, type, fill_dirt);
+}
+
+void TilemapDoc::paint_slope_explicit(int x, int y, SlopeType type, bool fill_dirt) {
+    tileset.ensure_slope_row();
+    const int w = slope_width(type);
+    const int base_col = slope_base_col(type);
+    const bool is_floor = slope_is_floor(type);
+
+    for (int i = 0; i < w; ++i) {
+        const int cx = x + i;
+        if (!in_bounds(cx, y)) continue;
+        if (!in_clip(cx, y)) continue;
+        record_cell_internal(cx, y);
+        MapCell& c = cell_at(cx, y);
+        c.mode = TileMode::Slope;
+        c.atlas_x = base_col + i;
+        c.atlas_y = Tileset::kSlopeRow; // Row 4
+    }
+
+    if (fill_dirt) {
+        for (int i = 0; i < w; ++i) {
+            const int cx = x + i;
+            const int dy = is_floor ? (y + 1) : (y - 1);
+            if (in_bounds(cx, dy) && in_clip(cx, dy)) {
+                MapCell& dirt_cell = cell_at(cx, dy);
+                if (dirt_cell.is_empty() || dirt_cell.mode != TileMode::Slope) {
+                    record_cell_internal(cx, dy);
+                    dirt_cell.mode = TileMode::Terrain;
+                    if (dirt_cell.roll == 0.0f) dirt_cell.roll = random_01();
+                }
+            }
+        }
+    }
+
+    solve_autotiles_around(x, y, w + 2);
+    mark_dirty();
+}
+
+void TilemapDoc::erase_slope(int x, int y) {
+    if (!in_bounds(x, y)) return;
+    const MapCell& c = get_cell(x, y);
+    if (c.mode == TileMode::Slope && c.atlas_y == Tileset::kSlopeRow) {
+        int partner_x = x;
+        if (c.atlas_x == 4 || c.atlas_x == 6 || c.atlas_x == 8 || c.atlas_x == 10) {
+            partner_x = x + 1;
+        } else if (c.atlas_x == 5 || c.atlas_x == 7 || c.atlas_x == 9 || c.atlas_x == 11) {
+            partner_x = x - 1;
+        }
+        if (partner_x != x && in_bounds(partner_x, y)) {
+            const MapCell& partner = get_cell(partner_x, y);
+            if (partner.mode == TileMode::Slope && partner.atlas_y == Tileset::kSlopeRow) {
+                record_cell_internal(partner_x, y);
+                cell_at(partner_x, y) = MapCell{};
+                solve_autotiles_around(partner_x, y, 2);
+            }
+        }
+    }
+    record_cell_internal(x, y);
+    cell_at(x, y) = MapCell{};
+    solve_autotiles_around(x, y, 2);
+    mark_dirty();
+}
+
 void TilemapDoc::update_cell_autotile(int x, int y) {
     if (!in_bounds(x, y)) return;
     MapCell& c = cell_at(x, y);
     if (c.mode != TileMode::Terrain) return;
 
-    const bool nb_E  = is_terrain(x + 1, y);
-    const bool nb_SE = is_terrain(x + 1, y + 1);
-    const bool nb_S  = is_terrain(x, y + 1);
-    const bool nb_SW = is_terrain(x - 1, y + 1);
-    const bool nb_W  = is_terrain(x - 1, y);
-    const bool nb_NW = is_terrain(x - 1, y - 1);
-    const bool nb_N  = is_terrain(x, y - 1);
-    const bool nb_NE = is_terrain(x + 1, y - 1);
+    const bool nb_E  = is_solid_for_terrain(x + 1, y, x, y);
+    const bool nb_SE = is_solid_for_terrain(x + 1, y + 1, x, y);
+    const bool nb_S  = is_solid_for_terrain(x, y + 1, x, y);
+    const bool nb_SW = is_solid_for_terrain(x - 1, y + 1, x, y);
+    const bool nb_W  = is_solid_for_terrain(x - 1, y, x, y);
+    const bool nb_NW = is_solid_for_terrain(x - 1, y - 1, x, y);
+    const bool nb_N  = is_solid_for_terrain(x, y - 1, x, y);
+    const bool nb_NE = is_solid_for_terrain(x + 1, y - 1, x, y);
 
     const uint8_t mask = static_cast<uint8_t>(
         (nb_E  ? 0x01 : 0) |
@@ -280,7 +467,7 @@ void TilemapDoc::paint_cell(int x, int y, TileMode mode, int stamp_col, int stam
             c.mode = mode;
             if (mode == TileMode::Terrain) {
                 if (c.roll == 0.0f) c.roll = random_01();
-            } else if (mode == TileMode::Stamp) {
+            } else if (mode == TileMode::Stamp || mode == TileMode::Slope) {
                 c.atlas_x = stamp_col;
                 c.atlas_y = stamp_row;
             } else {
