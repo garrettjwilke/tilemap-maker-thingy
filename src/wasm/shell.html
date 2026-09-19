@@ -122,6 +122,66 @@
     </div>
 
     <script type="text/javascript">
+        // macOS browser shortcut & stuck key fix (specifically for Firefox & Safari on macOS):
+        // 1. In Firefox on macOS, when Meta (Command) is held, the browser suppresses keyup events
+        //    for any accompanying keys (e.g. Cmd+Z). When Meta is released, we synthesize keyup
+        //    events for any keys that were left stuck in the down state.
+        // 2. Prevent default browser behavior on critical editor shortcuts (Cmd+Z, Cmd+Y, Cmd+S,
+        //    Cmd+O, Cmd+D, Cmd+A, Cmd+E) so that the browser does not consume the keys or drop events.
+        (function() {
+            const activeKeys = new Set();
+            let metaActive = false;
+
+            function clearActiveKeys() {
+                if (activeKeys.size === 0) return;
+                const canvas = document.getElementById('canvas');
+                activeKeys.forEach(code => {
+                    const evt = new KeyboardEvent('keyup', {
+                        key: code,
+                        code: code,
+                        bubbles: true,
+                        cancelable: true
+                    });
+                    if (canvas) canvas.dispatchEvent(evt);
+                });
+                activeKeys.clear();
+            }
+
+            window.addEventListener('keydown', (e) => {
+                if (e.key === 'Meta') {
+                    metaActive = true;
+                } else {
+                    activeKeys.add(e.code);
+                }
+
+                if (e.metaKey || e.ctrlKey) {
+                    const code = e.code;
+                    if (code === 'KeyZ' || code === 'KeyY' || code === 'KeyS' || code === 'KeyO' ||
+                        code === 'KeyD' || code === 'KeyA' || code === 'KeyE') {
+                        e.preventDefault();
+                    }
+                }
+
+                if (!e.metaKey && metaActive) {
+                    metaActive = false;
+                    clearActiveKeys();
+                }
+            }, true);
+
+            window.addEventListener('keyup', (e) => {
+                if (e.key === 'Meta') {
+                    metaActive = false;
+                    clearActiveKeys();
+                } else {
+                    activeKeys.delete(e.code);
+                }
+            }, true);
+
+            window.addEventListener('blur', () => {
+                metaActive = false;
+                clearActiveKeys();
+            });
+        })();
         if (window.location.search.includes('test_terrain')) {
             const controls = document.getElementById('debug-terrain-controls');
             if (controls) controls.style.display = 'flex';

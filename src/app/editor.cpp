@@ -3847,6 +3847,27 @@ int run_editor() {
 
             SDL_Event event;
             while (SDL_PollEvent(&event)) {
+                if (event.type == SDL_EVENT_KEY_UP) {
+                    if (event.key.key == SDLK_LGUI || event.key.key == SDLK_RGUI) {
+                        // When Command is released, release any modifier-associated keys that
+                        // browsers (like Firefox on macOS) may have swallowed keyup events for.
+                        io.AddKeyEvent(ImGuiMod_Super, false);
+                        io.AddKeyEvent(ImGuiKey_LeftSuper, false);
+                        io.AddKeyEvent(ImGuiKey_RightSuper, false);
+                        io.AddKeyEvent(ImGuiKey_Z, false);
+                        io.AddKeyEvent(ImGuiKey_Y, false);
+                        io.AddKeyEvent(ImGuiKey_S, false);
+                        io.AddKeyEvent(ImGuiKey_O, false);
+                        io.AddKeyEvent(ImGuiKey_N, false);
+                        io.AddKeyEvent(ImGuiKey_E, false);
+                        io.AddKeyEvent(ImGuiKey_C, false);
+                        io.AddKeyEvent(ImGuiKey_X, false);
+                        io.AddKeyEvent(ImGuiKey_V, false);
+                        io.AddKeyEvent(ImGuiKey_D, false);
+                        io.AddKeyEvent(ImGuiKey_A, false);
+                        io.AddKeyEvent(ImGuiKey_0, false);
+                    }
+                }
                 ImGui_ImplSDL3_ProcessEvent(&event);
                 if (event.type == SDL_EVENT_MOUSE_MOTION) {
                     g_ed.pending_mouse_moves.push_back(ImVec2(static_cast<float>(event.motion.x), static_cast<float>(event.motion.y)));
@@ -3915,19 +3936,26 @@ int run_editor() {
             if (!io.WantTextInput) {
                 const bool cmd = io.KeyCtrl || io.KeySuper;
 
-                if (cmd && ImGui::IsKeyPressed(ImGuiKey_D)) {
+                if (cmd && ImGui::IsKeyPressed(ImGuiKey_D, false)) {
+                    io.AddKeyEvent(ImGuiKey_D, false);
                     deselect();
                 }
-                if (cmd && ImGui::IsKeyPressed(ImGuiKey_0)) {
+                if (cmd && ImGui::IsKeyPressed(ImGuiKey_0, false)) {
+                    io.AddKeyEvent(ImGuiKey_0, false);
                     g_ed.zoom = 1.0f;
                 }
-                if (cmd && (ImGui::IsKeyPressed(ImGuiKey_Equal) || ImGui::IsKeyPressed(ImGuiKey_KeypadAdd))) {
+                if (cmd && (ImGui::IsKeyPressed(ImGuiKey_Equal, false) || ImGui::IsKeyPressed(ImGuiKey_KeypadAdd, false))) {
+                    io.AddKeyEvent(ImGuiKey_Equal, false);
+                    io.AddKeyEvent(ImGuiKey_KeypadAdd, false);
                     g_ed.zoom = std::min(16.0f, g_ed.zoom * 1.25f);
                 }
-                if (cmd && (ImGui::IsKeyPressed(ImGuiKey_Minus) || ImGui::IsKeyPressed(ImGuiKey_KeypadSubtract))) {
+                if (cmd && (ImGui::IsKeyPressed(ImGuiKey_Minus, false) || ImGui::IsKeyPressed(ImGuiKey_KeypadSubtract, false))) {
+                    io.AddKeyEvent(ImGuiKey_Minus, false);
+                    io.AddKeyEvent(ImGuiKey_KeypadSubtract, false);
                     g_ed.zoom = std::max(0.25f, g_ed.zoom / 1.25f);
                 }
-                if (cmd && ImGui::IsKeyPressed(ImGuiKey_Z)) {
+                if (cmd && ImGui::IsKeyPressed(ImGuiKey_Z, false)) {
+                    io.AddKeyEvent(ImGuiKey_Z, false);
                     if (g_ed.selection_lifted) {
                         cancel_or_deselect();
                     } else if (io.KeyShift) {
@@ -3936,35 +3964,43 @@ int run_editor() {
                         g_ed.doc.undo();
                     }
                 }
-                if (cmd && ImGui::IsKeyPressed(ImGuiKey_Y)) {
+                if (cmd && ImGui::IsKeyPressed(ImGuiKey_Y, false)) {
+                    io.AddKeyEvent(ImGuiKey_Y, false);
                     if (!g_ed.selection_lifted) {
                         g_ed.doc.redo();
                     }
                 }
-                if (cmd && ImGui::IsKeyPressed(ImGuiKey_S)) {
+                if (cmd && ImGui::IsKeyPressed(ImGuiKey_S, false)) {
+                    io.AddKeyEvent(ImGuiKey_S, false);
                     if (io.KeyShift) {
                         save_map_dialog(true);
                     } else {
                         save_map_dialog(false);
                     }
                 }
-                if (cmd && ImGui::IsKeyPressed(ImGuiKey_O)) {
+                if (cmd && ImGui::IsKeyPressed(ImGuiKey_O, false)) {
+                    io.AddKeyEvent(ImGuiKey_O, false);
                     open_map_dialog(renderer);
                 }
-                if (cmd && ImGui::IsKeyPressed(ImGuiKey_N)) {
+                if (cmd && ImGui::IsKeyPressed(ImGuiKey_N, false)) {
+                    io.AddKeyEvent(ImGuiKey_N, false);
                     g_ed.new_empty_tileset = false;
                     g_ed.show_new_modal = true;
                 }
-                if (cmd && ImGui::IsKeyPressed(ImGuiKey_E)) {
+                if (cmd && ImGui::IsKeyPressed(ImGuiKey_E, false)) {
+                    io.AddKeyEvent(ImGuiKey_E, false);
                     execute_export();
                 }
-                if (cmd && ImGui::IsKeyPressed(ImGuiKey_C) && g_ed.has_selection && !g_ed.paste_mode) {
+                if (cmd && ImGui::IsKeyPressed(ImGuiKey_C, false) && g_ed.has_selection && !g_ed.paste_mode) {
+                    io.AddKeyEvent(ImGuiKey_C, false);
                     copy_selection();
                 }
-                if (cmd && ImGui::IsKeyPressed(ImGuiKey_X) && g_ed.has_selection && !g_ed.paste_mode) {
+                if (cmd && ImGui::IsKeyPressed(ImGuiKey_X, false) && g_ed.has_selection && !g_ed.paste_mode) {
+                    io.AddKeyEvent(ImGuiKey_X, false);
                     cut_selection();
                 }
-                if (cmd && ImGui::IsKeyPressed(ImGuiKey_V) && !g_ed.clipboard.is_empty()) {
+                if (cmd && ImGui::IsKeyPressed(ImGuiKey_V, false) && !g_ed.clipboard.is_empty()) {
+                    io.AddKeyEvent(ImGuiKey_V, false);
                     start_paste();
                 }
 
@@ -4041,14 +4077,14 @@ int run_editor() {
                 }
 
                 if (!cmd) {
-                    if (ImGui::IsKeyPressed(ImGuiKey_1)) g_ed.tool = Tool::Paint;
-                    if (ImGui::IsKeyPressed(ImGuiKey_2)) g_ed.tool = Tool::Erase;
-                    if (ImGui::IsKeyPressed(ImGuiKey_3)) g_ed.tool = Tool::Line;
-                    if (ImGui::IsKeyPressed(ImGuiKey_4)) g_ed.tool = Tool::Rect;
-                    if (ImGui::IsKeyPressed(ImGuiKey_5)) g_ed.tool = Tool::Fill;
-                    if (ImGui::IsKeyPressed(ImGuiKey_6)) g_ed.tool = Tool::Select;
-                    if (ImGui::IsKeyPressed(ImGuiKey_7)) g_ed.tool = Tool::Eyedropper;
-                    if (ImGui::IsKeyPressed(ImGuiKey_F)) {
+                    if (ImGui::IsKeyPressed(ImGuiKey_1, false)) g_ed.tool = Tool::Paint;
+                    if (ImGui::IsKeyPressed(ImGuiKey_2, false)) g_ed.tool = Tool::Erase;
+                    if (ImGui::IsKeyPressed(ImGuiKey_3, false)) g_ed.tool = Tool::Line;
+                    if (ImGui::IsKeyPressed(ImGuiKey_4, false)) g_ed.tool = Tool::Rect;
+                    if (ImGui::IsKeyPressed(ImGuiKey_5, false)) g_ed.tool = Tool::Fill;
+                    if (ImGui::IsKeyPressed(ImGuiKey_6, false)) g_ed.tool = Tool::Select;
+                    if (ImGui::IsKeyPressed(ImGuiKey_7, false)) g_ed.tool = Tool::Eyedropper;
+                    if (ImGui::IsKeyPressed(ImGuiKey_F, false)) {
                         g_ed.slope_force_flip = !g_ed.slope_force_flip;
                         g_ed.status_msg = g_ed.slope_force_flip ? "Slope orientation flipped" : "Slope orientation normal";
                     }
@@ -4056,25 +4092,36 @@ int run_editor() {
             }
         } else {
             // Tileset Maker View shortcuts
+            const bool cmd = io.KeyCtrl || io.KeySuper;
+            if (cmd && !ImGui::IsKeyPressed(ImGuiKey_Z, false)) {
+                io.AddKeyEvent(ImGuiKey_Z, false);
+            }
             g_ed.tileset_editor.handle_shortcuts(io);
+            if (cmd) {
+                io.AddKeyEvent(ImGuiKey_Z, false);
+            }
             if (!io.WantTextInput) {
                 const bool cmd = io.KeyCtrl || io.KeySuper;
-                if (cmd && ImGui::IsKeyPressed(ImGuiKey_S)) {
+                if (cmd && ImGui::IsKeyPressed(ImGuiKey_S, false)) {
+                    io.AddKeyEvent(ImGuiKey_S, false);
                     if (io.KeyShift) g_ed.tileset_editor.save_project(true);
                     else g_ed.tileset_editor.save_project(false);
                 }
-                if (cmd && ImGui::IsKeyPressed(ImGuiKey_O)) {
+                if (cmd && ImGui::IsKeyPressed(ImGuiKey_O, false)) {
+                    io.AddKeyEvent(ImGuiKey_O, false);
 #ifdef __EMSCRIPTEN__
                     web_trigger_file_dialog(".tilesetproj", WebFileTarget_TilesetProj);
 #else
                     g_ed.tileset_editor.try_open_project_dialog();
 #endif
                 }
-                if (cmd && ImGui::IsKeyPressed(ImGuiKey_N)) {
+                if (cmd && ImGui::IsKeyPressed(ImGuiKey_N, false)) {
+                    io.AddKeyEvent(ImGuiKey_N, false);
                     g_ed.tileset_editor.ui.show_new = true;
                     g_ed.tileset_editor.ui.new_focus_name = true;
                 }
-                if (cmd && ImGui::IsKeyPressed(ImGuiKey_E)) {
+                if (cmd && ImGui::IsKeyPressed(ImGuiKey_E, false)) {
+                    io.AddKeyEvent(ImGuiKey_E, false);
                     g_ed.tileset_editor.export_all();
                 }
             }
