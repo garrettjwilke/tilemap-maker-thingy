@@ -199,14 +199,14 @@ void Tileset::auto_bind_extra_columns(int root_x, int root_y, float probability)
 void Tileset::ensure_slope_row() {
     if (rows > kSlopeRow) return;
     const int new_rows = kSlopeRow + 1; // at least 5 rows
-    const int old_w = cols * tile_size;
-    const int old_h = rows * tile_size;
-    const int new_h = new_rows * tile_size;
-    std::vector<uint8_t> new_pixels(static_cast<size_t>(old_w * new_h), 0);
     if (!pixels.empty()) {
+        const int old_w = cols * tile_size;
+        const int old_h = rows * tile_size;
+        const int new_h = new_rows * tile_size;
+        std::vector<uint8_t> new_pixels(static_cast<size_t>(old_w * new_h), 0);
         std::memcpy(new_pixels.data(), pixels.data(), std::min(pixels.size(), static_cast<size_t>(old_w * old_h)));
+        pixels = std::move(new_pixels);
     }
-    pixels = std::move(new_pixels);
     rows = new_rows;
     if (tile_collisions.size() < static_cast<size_t>(cols * rows)) {
         tile_collisions.resize(static_cast<size_t>(cols * rows), 1);

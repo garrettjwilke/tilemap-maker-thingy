@@ -100,10 +100,11 @@ public:
     Tileset tileset;
     std::vector<CollisionType> collision_types;
 
-    TilemapDoc(int w = 20, int h = 14, int ts = 16);
+    TilemapDoc(int w = 20, int h = 14, int ts = 16, int buf = 1);
 
-    void reset(int w = 20, int h = 14, int ts = 16);
-    void reset_8px(int w_8px, int h_8px, int ts = 16);
+    void reset(int w = 20, int h = 14, int ts = 16, int buf = 1);
+    void reset_8px(int w_8px, int h_8px, int ts = 16, int buf = 1);
+    void set_buffer(int new_buffer);
     void clear_tileset();
 
     // Dimension metrics in cells, 8x8 tile units, and pixel units
@@ -246,6 +247,10 @@ public:
     void mark_dirty() { dirty_ = true; }
 
 private:
+    mutable int allocated_buffer_ = 1;
+    void ensure_buffer_allocated() const;
+    void sync_buffer();
+
     std::vector<MapCell> cells_;
     static const MapCell kEmptyCell;
 

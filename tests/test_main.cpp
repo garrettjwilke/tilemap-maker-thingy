@@ -1228,6 +1228,32 @@ void test_buffer_and_outside_zone() {
            "cleared active cell is reset to tile (10, 1)");
     expect(doc.get_cell(-1, -1).atlas_x == 10 && doc.get_cell(-1, -1).atlas_y == 1,
            "cleared buffer cell is reset to tile (10, 1)");
+
+    // 7. Dynamic buffer resize and bounds safety
+    doc.reset(10, 8, 16, 1);
+    MapCell test_cell;
+    test_cell.mode = TileMode::Stamp;
+    test_cell.atlas_x = 4;
+    test_cell.atlas_y = 2;
+    doc.set_cell(5, 4, test_cell);
+    doc.set_cell(-1, -1, test_cell);
+
+    // Expand buffer from 1 to 3
+    doc.set_buffer(3);
+    expect(doc.buffer == 3, "buffer set to 3");
+    expect(doc.total_width() == 16, "total_width is 10 + 2*3 = 16");
+    expect(doc.total_height() == 14, "total_height is 8 + 2*3 = 14");
+    expect(doc.get_cell(5, 4).atlas_x == 4, "active cell (5, 4) preserved after buffer resize");
+    expect(doc.get_cell(-1, -1).atlas_x == 4, "buffer cell (-1, -1) preserved after buffer resize");
+    expect(doc.in_bounds(-3, -3), "(-3, -3) in bounds with buffer 3");
+    expect(!doc.in_bounds(-4, 0), "(-4, 0) out of bounds with buffer 3");
+
+    // Direct buffer assignment sync test (without calling set_buffer explicitly)
+    doc.buffer = 2;
+    expect(doc.get_cell(5, 4).atlas_x == 4, "active cell preserved after direct doc.buffer assignment");
+    expect(doc.get_cell(-1, -1).atlas_x == 4, "buffer cell preserved after direct doc.buffer assignment");
+    expect(doc.in_bounds(-2, -2), "(-2, -2) in bounds with buffer 2");
+    expect(!doc.in_bounds(-3, 0), "(-3, 0) out of bounds with buffer 2");
 }
 
 void test_empty_background_tile_10_1() {

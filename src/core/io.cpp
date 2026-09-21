@@ -398,8 +398,7 @@ static std::string load_map_json_from_text(TilemapDoc& doc, const std::string& t
     const int origin_y = find_int("origin_y", 0);
     const std::string tileset_field = find_str("tileset");
 
-    doc.reset(width, height, tile_size);
-    doc.buffer = buffer;
+    doc.reset(width, height, tile_size, buffer);
     doc.name = name.empty() ? "untitled" : name;
     doc.origin_x = origin_x;
     doc.origin_y = origin_y;

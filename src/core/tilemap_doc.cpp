@@ -19,15 +19,16 @@ float random_01() {
 }
 } // namespace
 
-TilemapDoc::TilemapDoc(int w, int h, int ts) {
-    reset(w, h, ts);
+TilemapDoc::TilemapDoc(int w, int h, int ts, int buf) {
+    reset(w, h, ts, buf);
 }
 
-void TilemapDoc::reset(int w, int h, int ts) {
+void TilemapDoc::reset(int w, int h, int ts, int buf) {
     width = clampi(w, 1, 2048);
     height = clampi(h, 1, 2048);
     tile_size = (ts == 8) ? 8 : 16;
-    buffer = 1;
+    buffer = std::max(0, buf);
+    allocated_buffer_ = buffer;
     name = "untitled";
     origin_x = 0;
     origin_y = 0;
@@ -40,11 +41,50 @@ void TilemapDoc::reset(int w, int h, int ts) {
     collision_types.push_back(CollisionType{1, default_collision_type_name(1), Rgb{235, 60, 50}});
 }
 
-void TilemapDoc::reset_8px(int w_8px, int h_8px, int ts) {
+void TilemapDoc::reset_8px(int w_8px, int h_8px, int ts, int buf) {
     const int f = (ts == 8) ? 1 : 2;
     const int cells_w = std::max(1, (w_8px + f - 1) / f);
     const int cells_h = std::max(1, (h_8px + f - 1) / f);
-    reset(cells_w, cells_h, ts);
+    reset(cells_w, cells_h, ts, buf);
+}
+
+void TilemapDoc::set_buffer(int new_buf) {
+    buffer = std::max(0, new_buf);
+    sync_buffer();
+}
+
+void TilemapDoc::ensure_buffer_allocated() const {
+    if (allocated_buffer_ != buffer || cells_.size() != total_cells()) {
+        const_cast<TilemapDoc*>(this)->sync_buffer();
+    }
+}
+
+void TilemapDoc::sync_buffer() {
+    const int new_buf = std::max(0, buffer);
+    const int old_buf = allocated_buffer_;
+    const int new_tot_w = width + 2 * new_buf;
+    const int new_tot_h = height + 2 * new_buf;
+    std::vector<MapCell> new_cells(static_cast<size_t>(new_tot_w * new_tot_h), MapCell{});
+
+    const int old_tot_w = width + 2 * old_buf;
+    const int old_tot_h = height + 2 * old_buf;
+    if (cells_.size() == static_cast<size_t>(old_tot_w * old_tot_h)) {
+        for (int y = -old_buf; y < height + old_buf; ++y) {
+            for (int x = -old_buf; x < width + old_buf; ++x) {
+                if (x >= -new_buf && y >= -new_buf && x < width + new_buf && y < height + new_buf) {
+                    const size_t old_idx = static_cast<size_t>((y + old_buf) * old_tot_w + (x + old_buf));
+                    const size_t new_idx = static_cast<size_t>((y + new_buf) * new_tot_w + (x + new_buf));
+                    if (old_idx < cells_.size() && new_idx < new_cells.size()) {
+                        new_cells[new_idx] = cells_[old_idx];
+                    }
+                }
+            }
+        }
+    }
+
+    buffer = new_buf;
+    allocated_buffer_ = new_buf;
+    cells_ = std::move(new_cells);
 }
 
 void TilemapDoc::clear_tileset() {
@@ -54,31 +94,50 @@ void TilemapDoc::clear_tileset() {
 }
 
 const MapCell& TilemapDoc::get_cell(int x, int y) const {
+    ensure_buffer_allocated();
     if (!in_bounds(x, y)) return kEmptyCell;
-    return cells_[cell_index(x, y)];
+    const size_t idx = cell_index(x, y);
+    if (idx >= cells_.size()) return kEmptyCell;
+    return cells_[idx];
 }
 
 void TilemapDoc::set_cell(int x, int y, const MapCell& cell) {
+    ensure_buffer_allocated();
     if (!in_bounds(x, y)) return;
+    const size_t idx = cell_index(x, y);
+    if (idx >= cells_.size()) return;
     record_cell_internal(x, y);
-    cells_[cell_index(x, y)] = cell;
+    cells_[idx] = cell;
     mark_dirty();
 }
 
 MapCell& TilemapDoc::cell_at(int x, int y) {
-    return cells_[cell_index(x, y)];
+    ensure_buffer_allocated();
+    const size_t idx = cell_index(x, y);
+    if (idx >= cells_.size()) {
+        cells_.resize(total_cells(), MapCell{});
+    }
+    return cells_[idx];
 }
 
 const MapCell& TilemapDoc::cell_at(int x, int y) const {
-    return cells_[cell_index(x, y)];
+    ensure_buffer_allocated();
+    if (!in_bounds(x, y)) return kEmptyCell;
+    const size_t idx = cell_index(x, y);
+    if (idx >= cells_.size()) return kEmptyCell;
+    return cells_[idx];
 }
 
 void TilemapDoc::clear_cells() {
+    ensure_buffer_allocated();
     begin_stroke("Clear Map");
     for (int y = -buffer; y < height + buffer; ++y) {
         for (int x = -buffer; x < width + buffer; ++x) {
             record_cell_internal(x, y);
-            cells_[cell_index(x, y)] = MapCell{};
+            const size_t idx = cell_index(x, y);
+            if (idx < cells_.size()) {
+                cells_[idx] = MapCell{};
+            }
         }
     }
     solve_all_autotiles();
@@ -89,6 +148,7 @@ void TilemapDoc::clear_cells() {
 void TilemapDoc::record_cell_internal(int x, int y) {
     if (!stroke_in_progress_) return;
     if (!in_bounds(x, y)) return;
+    ensure_buffer_allocated();
     const size_t idx = cell_index(x, y);
     if (idx < pending_recorded_.size() && pending_recorded_[idx]) {
         return; // Already recorded old state
@@ -973,6 +1033,7 @@ void TilemapDoc::resize(int new_w, int new_h, int anchor_x, int anchor_y) {
     width = new_w;
     height = new_h;
     cells_ = std::move(new_cells);
+    allocated_buffer_ = buffer;
     solve_all_autotiles();
     end_stroke();
     mark_dirty();
